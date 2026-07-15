@@ -53,6 +53,28 @@ android {
     }
 }
 
+// ─── Verification task ─────────────────────────────────────────────
+// Runs verify_contract.py after assembleDebug to ensure roadmap compliance.
+tasks.register<Exec>("verifyContract") {
+    dependsOn("assembleDebug")
+    workingDir = rootProject.projectDir
+    commandLine("python3", "scripts/verify_contract.py", "--apk", 
+        "${projectDir}/build/outputs/apk/debug/app-debug.apk")
+    isIgnoreExitValue = false
+    doFirst {
+        val reportFile = file("${projectDir}/build/reports/verify-contract.txt")
+        reportFile.parentFile.mkdirs()
+        standardOutput = reportFile.outputStream()
+    }
+    doLast {
+        println("📄 Verification report: ${projectDir}/build/reports/verify-contract.txt")
+    }
+}
+
+tasks.matching { it.name == "assembleDebug" }.configureEach {
+    finalizedBy("verifyContract")
+}
+
 dependencies {
     // AndroidX Core
     implementation(libs.androidx.core.ktx)

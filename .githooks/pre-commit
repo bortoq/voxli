@@ -1,0 +1,28 @@
+#!/bin/bash
+# Pre-commit hook: проверяет код перед коммитом.
+# Запускает verify_contract.py на последнем собранном APK.
+#
+# Установка:
+#   git config core.hooksPath .githooks
+
+set -e
+
+echo "🔍 Pre-commit: запуск верификации контракта roadmap..."
+
+# Найти JDK
+if [ -d /tmp/jdk21 ]; then
+    export JAVA_HOME=/tmp/jdk21
+    export PATH="$JAVA_HOME/bin:$PATH"
+fi
+
+APK="app/build/outputs/apk/debug/app-debug.apk"
+SCRIPT="scripts/verify_contract.py"
+
+if [ -f "$APK" ] && [ -f "$SCRIPT" ]; then
+    python3 "$SCRIPT" --apk "$APK" || {
+        echo "❌ Pre-commit: верификация не пройдена. Коммит отклонён."
+        exit 1
+    }
+else
+    echo "⚠️  APK не найден — пропускаем верификацию. Запустите ./gradlew assembleDebug"
+fi
