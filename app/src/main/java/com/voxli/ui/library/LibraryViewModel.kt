@@ -14,6 +14,7 @@ import com.voxli.settings.SettingsRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -49,6 +50,9 @@ class LibraryViewModel(
     val books: StateFlow<List<BookEntity>> = _books.asStateFlow()
 
     // ---- Genre filter ----
+    private val _allGenres = MutableStateFlow<List<String>>(emptyList())
+    val allGenres: StateFlow<List<String>> = _allGenres.asStateFlow()
+
     private val _selectedGenres = MutableStateFlow<Set<String>>(emptySet())
     val selectedGenres: StateFlow<Set<String>> = _selectedGenres.asStateFlow()
 
@@ -75,19 +79,31 @@ class LibraryViewModel(
     val filterAuthor: StateFlow<String?> = _filterAuthor.asStateFlow()
 
     init {
-        // Load settings
-        viewModelScope.launch {
-            settingsRepo.selectedGenres.collect { _selectedGenres.value = it }
-        }
         viewModelScope.launch {
             settingsRepo.sortFieldAuthors.collect { _sortFieldAuthors.value = it }
         }
         viewModelScope.launch {
             settingsRepo.sortFieldTitles.collect { _sortFieldTitles.value = it }
         }
-        // Initial load
+        // Load all available genres from DB
+        loadAllGenres()
+        // Initial data load
         loadAuthors()
         loadHistory()
+    }
+
+    // ---- Genre loading ----
+
+    private fun loadAllGenres() {
+        viewModelScope.launch {
+            try {
+                val genres = bookDao.getAllGenres()
+                _allGenres.value = genres
+                // Restore saved selection; if empty = default all
+                val saved = settingsRepo.selectedGenres.first()
+                _selectedGenres.value = if (saved.isEmpty()) genres.toSet() else saved
+            } catch (_: Exception) { }
+        }
     }
 
     // ---- Search ----
@@ -105,7 +121,6 @@ class LibraryViewModel(
     private suspend fun performSearch() {
         val query = _debouncedQuery.value
         if (query.isBlank()) {
-            // Reset to full lists
             loadAuthors()
             loadBooks()
             return
@@ -155,43 +170,34 @@ class LibraryViewModel(
     private fun loadAuthors() {
         viewModelScope.launch {
             try {
-                val allAuthors = bookDao.getAllAuthors()
                 val genreFilter = _selectedGenres.value
                 if (genreFilter.isEmpty()) {
-                    _authors.value = allAuthors
-                } else {
-                    // Filter authors who have books in selected genres
-                    val booksInGenres = bookDao.getBooksByGenre(genreFilter.first())
-                    // Simplified: just return authors filtered by genre
-                    loadAuthorsFilteredByGenre(genreFilter)
+                    _authors.value = emptyList()
+                    return@launch
                 }
+                val allBooks = bookDao.getAllBooks()
+                val authorsInGenres = allBooks
+                    .filter { it.genre in genreFilter && it.author.isNotBlank() }
+                    .map { it.author }
+                    .distinct()
+                    .sortedBy { it.lowercase() }
+                _authors.value = authorsInGenres
             } catch (e: Exception) {
                 _error.value = "Ошибка загрузки авторов: ${e.localizedMessage}"
             }
         }
     }
 
-    private suspend fun loadAuthorsFilteredByGenre(genres: Set<String>) {
-        // Get all books and group by author
-        val allBooks = bookDao.getAllBooks()
-        val authorsInGenres = allBooks
-            .filter { it.genre in genres }
-            .map { it.author }
-            .distinct()
-            .sortedBy { it.lowercase() }
-        _authors.value = authorsInGenres
-    }
-
     private fun loadBooks() {
         viewModelScope.launch {
             try {
-                val allBooks = bookDao.getAllBooks()
                 val genreFilter = _selectedGenres.value
-                _books.value = if (genreFilter.isEmpty()) {
-                    allBooks
-                } else {
-                    allBooks.filter { it.genre in genreFilter }
+                if (genreFilter.isEmpty()) {
+                    _books.value = emptyList()
+                    return@launch
                 }
+                val allBooks = bookDao.getAllBooks()
+                _books.value = allBooks.filter { it.genre in genreFilter }
             } catch (e: Exception) {
                 _error.value = "Ошибка загрузки книг: ${e.localizedMessage}"
             }
@@ -202,9 +208,7 @@ class LibraryViewModel(
         viewModelScope.launch {
             try {
                 _history.value = historyDao.getAllHistory().take(20)
-            } catch (_: Exception) {
-                // History can be empty, that's fine
-            }
+            } catch (_: Exception) { }
         }
     }
 
@@ -215,7 +219,6 @@ class LibraryViewModel(
         _isRefreshing.value = true
         viewModelScope.launch {
             try {
-                // Check mirror and update catalog
                 flibustaProvider.trySwitchMirror()
                 loadAuthors()
                 loadBooks()
@@ -237,28 +240,6 @@ class LibraryViewModel(
         _selectedGenres.value = current
         viewModelScope.launch { settingsRepo.setSelectedGenres(current) }
         loadAuthors()
-        loadBooks()
-    }
-
-    fun clearGenreFilter() {
-        _selectedGenres.value = emptySet()
-        viewModelScope.launch { settingsRepo.setSelectedGenres(emptySet()) }
-        loadAuthors()
-        loadBooks()
-    }
-
-    // ---- Sorting ----
-
-    fun setSortFieldAuthors(field: String) {
-        _sortFieldAuthors.value = field
-        viewModelScope.launch { settingsRepo.setSortFieldAuthors(field) }
-        // Re-sort authors list
-        loadAuthors()
-    }
-
-    fun setSortFieldTitles(field: String) {
-        _sortFieldTitles.value = field
-        viewModelScope.launch { settingsRepo.setSortFieldTitles(field) }
         loadBooks()
     }
 

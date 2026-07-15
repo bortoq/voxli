@@ -43,6 +43,9 @@ interface BookDao {
     @RawQuery(observedEntities = [BookEntity::class])
     suspend fun searchAuthorsFts(query: SupportSQLiteQuery): List<String>
 
+    @Query("SELECT DISTINCT genre FROM books WHERE genre != '' ORDER BY genre COLLATE NOCASE")
+    suspend fun getAllGenres(): List<String>
+
     @Query("SELECT * FROM books WHERE has_audio = 0 ORDER BY RANDOM() LIMIT :limit")
     suspend fun getBooksNeedingAudioCheck(limit: Int = 100): List<BookEntity>
 }

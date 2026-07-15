@@ -28,3 +28,5 @@ out/
 *.db-wal
 *.seed.db
 secrets.properties
+app/build/
+app/schemas/

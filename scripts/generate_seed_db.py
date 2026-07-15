@@ -18,6 +18,7 @@ Reference: roadmap §14.3
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 import urllib.request
@@ -37,11 +38,32 @@ FLIBUSTA_MIRRORS = [
     "http://flibusta.net",
 ]
 
+# Genre names as they appear in Flibusta's /opds/genres/ page
 GENRES = [
-    "prose", "detective", "fantasy", "sci-fi", "horror", "adventure",
-    "romance", "thriller", "poetry", "drama", "humor", "child",
-    "history", "religion", "philosophy", "psychology", "technical",
-    "reference", "nonfiction", "biography", "military", "classic",
+    "Деловая литература",
+    "Детективы и триллеры",
+    "Детская литература: прочее",
+    "Детская литература: сказки",
+    "Детская художественная литература",
+    "Документальная литература",
+    "Дом и семья",
+    "Драматургия",
+    "Искусство, Искусствоведение, Дизайн",
+    "Компьютеры и Интернет",
+    "Любовные романы",
+    "Наука, Образование",
+    "Поэзия",
+    "Приключения",
+    "Проза",
+    "Прочее",
+    "Религия, духовность, эзотерика",
+    "Справочная литература",
+    "Старинное",
+    "Техника",
+    "Учебники и пособия",
+    "Фантастика",
+    "Фольклор",
+    "Юмор",
 ]
 
 # ---- Schema ----
@@ -186,16 +208,23 @@ def fetch_opds(url: str) -> Optional[str]:
 NS = {
     "atom": "http://www.w3.org/2005/Atom",
     "opds": "http://opds-spec.org/2010/catalog",
+    "dc": "http://purl.org/dc/terms/",
 }
+
+def _extract_book_id(entry: ET.Element) -> Optional[int]:
+    """Extract numeric book ID from acquisition link: /b/{id}/{format}."""
+    for link in entry.findall("atom:link", NS):
+        href = link.get("href", "")
+        m = re.match(r"/b/(\d+)/", href)
+        if m:
+            return int(m.group(1))
+    return None
+
 
 def parse_opds_entry(entry: ET.Element) -> Optional[dict]:
     """Parse an OPDS entry into a book dict."""
-    id_text = entry.findtext("atom:id", "", NS)
-    if not id_text or "flibusta:book:" not in id_text:
-        return None
-    try:
-        book_id = int(id_text.split("flibusta:book:")[1])
-    except (ValueError, IndexError):
+    book_id = _extract_book_id(entry)
+    if book_id is None:
         return None
 
     title = entry.findtext("atom:title", "", NS)
@@ -207,6 +236,22 @@ def parse_opds_entry(entry: ET.Element) -> Optional[dict]:
 
     content = entry.findtext("atom:content", "", NS)
     published = entry.findtext("atom:published", "", NS)
+    
+    # Extract language from dc:language
+    lang = ""
+    lang_el = entry.find("dc:language", NS)
+    if lang_el is not None:
+        lang = lang_el.text or ""
+    
+    # Extract series info from content HTML
+    series = ""
+    series_num = 0
+    if content:
+        m = re.search(r'Серия:\s*([^<]+?)(?:\s+#(\d+))?\s*<', content)
+        if m:
+            series = m.group(1).strip()
+            if m.group(2):
+                series_num = int(m.group(2))
 
     has_fb2 = False
     has_epub = False
@@ -226,46 +271,97 @@ def parse_opds_entry(entry: ET.Element) -> Optional[dict]:
         "has_fb2": 1 if has_fb2 else 0,
         "has_epub": 1 if has_epub else 0,
         "created_at": published,
-        "series": "",
-        "series_num": 0,
-        "lang": "",
+        "series": series,
+        "series_num": series_num,
+        "lang": lang,
         "rating": 0.0,
         "votes_count": 0,
         "has_audio": 0,
     }
 
-def fetch_genre_books(genre: str, base_url: str, limit: int = 500) -> list[dict]:
-    """Fetch top books for a genre from OPDS."""
+def fetch_genre_url(genre_url: str, base_url: str, seen_ids: set, limit: int = 200) -> list[dict]:
+    """Recursively fetch books from a genre URL (follows sub-categories)."""
     books = []
-    offset = 0
-    page_size = 100
+    url = base_url + genre_url
 
-    while len(books) < limit:
-        url = f"{base_url}/opds/genre/{genre}/?offset={offset}&limit={page_size}"
-        xml = fetch_opds(url)
-        if not xml:
-            break
+    # Check if this is a paginated book listing (has /{number} suffix)
+    has_page = re.search(r'/(\d+)$', genre_url)
 
-        try:
-            root = ET.fromstring(xml)
-        except ET.ParseError:
-            break
+    xml = fetch_opds(url)
+    if not xml:
+        return books
 
-        entries = root.findall(".//atom:entry", NS)
-        if not entries:
-            break
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return books
 
-        for entry in entries:
+    entries = root.findall(".//atom:entry", NS)
+    if not entries:
+        return books
+
+    for entry in entries:
+        # If entry has acquisition links with fb2/epub → it's a book
+        acquisition_links = [
+            link for link in entry.findall("atom:link", NS)
+            if link.get("rel", "").startswith("http://opds-spec.org/acquisition")
+        ]
+        if acquisition_links:
             result = parse_opds_entry(entry)
-            if result:
-                result["genre"] = genre
+            if result and result["id"] not in seen_ids:
+                seen_ids.add(result["id"])
                 books.append(result)
+                if len(books) >= limit:
+                    return books[:limit]
+            continue
 
-        offset += page_size
-        if len(entries) < page_size:
-            break
+        # Otherwise it might be a sub-category link
+        sub_link = entry.find("atom:link", NS)
+        if sub_link is not None:
+            sub_href = sub_link.get("href", "")
+            if sub_href and not sub_href.startswith("http"):
+                # Follow sub-category
+                sub_books = fetch_genre_url(sub_href, base_url, seen_ids, limit - len(books))
+                books.extend(sub_books)
 
-        print(f"  {genre}: {len(books)} books...", file=sys.stderr)
+    # Follow next page if available
+    next_link = root.find(".//atom:link[@rel='next']", NS)
+    if next_link is not None and len(books) < limit:
+        next_href = next_link.get("href", "")
+        if next_href:
+            more = fetch_genre_url(next_href, base_url, seen_ids, limit - len(books))
+            books.extend(more)
+
+    return books[:limit]
+
+
+def fetch_genre_books(genre_name: str, base_url: str, limit: int = 500) -> list[dict]:
+    """Fetch top books for a genre by walking the OPDS genre tree."""
+    # First, find the genre link from /opds/genres
+    xml = fetch_opds(f"{base_url}/opds/genres")
+    if not xml:
+        return []
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return []
+
+    seen_ids = set()
+    books = []
+
+    for entry in root.findall(".//atom:entry", NS):
+        title = entry.findtext("atom:title", "", NS)
+        link = entry.find("atom:link", NS)
+        if link is None:
+            continue
+        href = link.get("href", "")
+
+        # Match genre by name (contains the genre_name substring)
+        if genre_name.lower() in title.lower():
+            genre_books = fetch_genre_url(href, base_url, seen_ids, limit)
+            books.extend(genre_books)
+            if len(books) >= limit:
+                break
 
     return books[:limit]
 
@@ -341,17 +437,18 @@ def build_seed_db(output_path: Path, max_books: int = 5000):
     # Fetch books from each genre
     all_books = []
     seen_ids = set()
+    per_genre = max(1, max_books // len(GENRES))
 
     for genre in GENRES:
-        genre_books = fetch_genre_books(genre, base_url, limit=max_books // len(GENRES) // 2)
+        genre_books = fetch_genre_books(genre, base_url, limit=per_genre)
         for book in genre_books:
             if book["id"] not in seen_ids:
                 seen_ids.add(book["id"])
                 all_books.append(book)
-        print(f"  {genre}: {len(genre_books)} unique books", file=sys.stderr)
+        print(f"  {genre}: {len(genre_books)} books", file=sys.stderr)
 
     # Also fetch new books for coverage
-    new_books = fetch_new_books(base_url, max_books // 2)
+    new_books = fetch_new_books(base_url, max_books)
     for book in new_books:
         if book["id"] not in seen_ids:
             seen_ids.add(book["id"])
@@ -380,8 +477,11 @@ def build_seed_db(output_path: Path, max_books: int = 5000):
 
     print(f"Inserted {len(all_books)} books", file=sys.stderr)
 
+    conn.commit()
+
     # FTS5 rebuild
     conn.execute("INSERT INTO books_fts(books_fts) VALUES ('rebuild')")
+    conn.commit()
 
     # Vacuum
     conn.execute("VACUUM")

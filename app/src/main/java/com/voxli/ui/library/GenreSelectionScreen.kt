@@ -9,40 +9,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
 /**
- * The 22 flibusta genres as defined in roadmap §14.1.
- */
-val FLIBUSTA_GENRES: List<Pair<String, String>> = listOf(
-    "prose" to "Проза",
-    "detective" to "Детектив",
-    "fantasy" to "Фэнтези",
-    "sci-fi" to "Научная фантастика",
-    "horror" to "Ужасы и Мистика",
-    "adventure" to "Приключения",
-    "romance" to "Любовный роман",
-    "thriller" to "Триллер",
-    "poetry" to "Поэзия",
-    "drama" to "Драматургия",
-    "humor" to "Юмор",
-    "child" to "Детская",
-    "history" to "История",
-    "religion" to "Религия",
-    "philosophy" to "Философия",
-    "psychology" to "Психология",
-    "technical" to "Техническая",
-    "reference" to "Справочная",
-    "nonfiction" to "Документальная / Публицистика",
-    "biography" to "Биография",
-    "military" to "Военная",
-    "classic" to "Классика",
-)
-
-/**
- * Genre selection screen with checkboxes for all 22 flibusta genres.
- * Reference: roadmap §8.4 step 3, §14.1.
+ * Genre selection screen showing distinct genres from the database.
+ * By default all genres are selected. Empty selection = show no books.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GenreSelectionScreen(
+    allGenres: List<String>,
     selectedGenres: Set<String>,
     onGenreToggle: (String) -> Unit,
     onDone: () -> Unit,
@@ -66,7 +39,7 @@ fun GenreSelectionScreen(
         ) {
             // Info text
             Text(
-                text = if (selectedGenres.isEmpty()) "Выбрано: все жанры" else "Выбрано: ${selectedGenres.size}",
+                text = if (selectedGenres.isEmpty()) "Ничего не выбрано" else "Выбрано: ${selectedGenres.size} из ${allGenres.size}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
@@ -77,8 +50,8 @@ fun GenreSelectionScreen(
                 modifier = Modifier.weight(1f),
                 contentPadding = PaddingValues(vertical = 4.dp),
             ) {
-                items(FLIBUSTA_GENRES) { (term, label) ->
-                    val isChecked = term in selectedGenres
+                items(allGenres, key = { it }) { genre ->
+                    val isChecked = genre in selectedGenres
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -86,11 +59,11 @@ fun GenreSelectionScreen(
                     ) {
                         Checkbox(
                             checked = isChecked,
-                            onCheckedChange = { onGenreToggle(term) },
+                            onCheckedChange = { onGenreToggle(genre) },
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            text = label,
+                            text = genre,
                             style = MaterialTheme.typography.bodyLarge,
                             modifier = Modifier
                                 .weight(1f)
@@ -100,7 +73,7 @@ fun GenreSelectionScreen(
                 }
             }
 
-            // Quick actions
+            // Quick actions row
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -108,9 +81,17 @@ fun GenreSelectionScreen(
                 horizontalArrangement = Arrangement.SpaceEvenly,
             ) {
                 OutlinedButton(onClick = {
+                    // Select all
+                    allGenres.forEach { genre ->
+                        if (genre !in selectedGenres) onGenreToggle(genre)
+                    }
+                }) {
+                    Text("Выбрать всё")
+                }
+                OutlinedButton(onClick = {
                     // Deselect all
-                    FLIBUSTA_GENRES.forEach { (term, _) ->
-                        if (term in selectedGenres) onGenreToggle(term)
+                    allGenres.forEach { genre ->
+                        if (genre in selectedGenres) onGenreToggle(genre)
                     }
                 }) {
                     Text("Сбросить")

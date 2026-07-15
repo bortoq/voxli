@@ -7,6 +7,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.voxli.catalog.db.HistoryEntity
 import com.voxli.catalog.db.HistoryDao
+import com.voxli.flibusta.provider.FlibustaProvider
 import com.voxli.reader.engine.*
 import com.voxli.settings.SettingsRepository
 import com.voxli.tts.engine.TtsEngine
@@ -15,7 +16,7 @@ import kotlinx.coroutines.launch
 
 /**
  * ViewModel for the reader screen.
- * Manages paginator lifecycle, TTS, progress saving, and settings state.
+ * Manages book downloading, paginator lifecycle, TTS, progress saving, and settings state.
  *
  * Reference: roadmap §7.5 (paginator lifecycle), §7.6 (TTS), §4.3 (char_offset).
  */
@@ -24,6 +25,8 @@ class ReaderViewModel(
     private val bookDao: com.voxli.catalog.db.BookDao,
     private val historyDao: HistoryDao,
     private val settingsRepo: SettingsRepository,
+    private val bookDownloader: BookDownloader,
+    private val flibustaProvider: FlibustaProvider,
 ) : AndroidViewModel(application) {
 
     // ---- State ----
@@ -42,8 +45,11 @@ class ReaderViewModel(
     private val _totalPages = MutableStateFlow(0)
     val totalPages: StateFlow<Int> = _totalPages.asStateFlow()
 
-    private val _isLoading = MutableStateFlow(true)
+    private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+
+    private val _error = MutableStateFlow<String?>(null)
+    val error: StateFlow<String?> = _error.asStateFlow()
 
     // Session state
     private var document: DocumentModel? = null
@@ -56,7 +62,6 @@ class ReaderViewModel(
     private var fontSize = MutableStateFlow(16)
 
     init {
-        // Observe settings
         viewModelScope.launch {
             settingsRepo.bgColor.collect { bgColor.value = Color(it) }
         }
@@ -69,58 +74,54 @@ class ReaderViewModel(
     }
 
     /**
-     * Load a book for reading.
-     * @param bookId flibusta book ID
-     * @param filePath path to cached FB2/EPUB file
-     * @param image the file
+     * Load a book by its flibusta ID: download + parse + build paginator.
      */
-    fun loadBook(bookId: Long, file: java.io.File) {
+    fun loadBook(bookId: Long) {
+        if (_isLoading.value) return
         viewModelScope.launch {
             _isLoading.value = true
+            _error.value = null
 
-            // Determine parser by extension
-            val parser: BookParser = when {
-                file.name.endsWith(".fb2", ignoreCase = true) ||
-                file.name.endsWith(".fb2.zip", ignoreCase = true) -> Fb2Parser()
-                file.name.endsWith(".epub", ignoreCase = true) -> EpubParser()
-                else -> {
-                    _isLoading.value = false
-                    return@launch
-                }
+            // Try to download the book (FB2 format)
+            val mirror = flibustaProvider.getActiveMirror()
+            val file = bookDownloader.download(bookId, "fb2", mirror)
+            if (file == null) {
+                _error.value = "Не удалось загрузить книгу"
+                _isLoading.value = false
+                return@launch
             }
 
+            // Parse
+            val parser: BookParser = Fb2Parser()
             try {
                 document = parser.parse(file)
                 buildPaginator()
-                // Restore progress
                 restoreProgress(bookId)
-                _isLoading.value = false
             } catch (e: Exception) {
-                _isLoading.value = false
+                _error.value = "Ошибка чтения книги: ${e.localizedMessage}"
             }
+            _isLoading.value = false
         }
     }
 
     private suspend fun buildPaginator() {
         val doc = document ?: return
 
-        // Convert TextPaint from settings
         val paint = TextPaint().apply {
             color = android.graphics.Color.BLACK
             textSize = fontSize.value * getApplication<Application>().resources.displayMetrics.density
             isAntiAlias = true
         }
 
-        // Dimensions — will be updated from Compose onFirstDraw
+        // Default dimensions — will be updated from Compose on first draw
         val paginator = Paginator(
             document = doc,
-            pageWidthPx = 1080,  // default, updated on first draw
-            pageHeightPx = 1600, // default, updated on first draw
+            pageWidthPx = 1080,
+            pageHeightPx = 1600,
             textPaint = paint,
         )
         this.paginator = paginator
 
-        // Observe paginator state
         viewModelScope.launch {
             paginator.currentPageIndex.collect { index ->
                 _currentPageIndex.value = index
@@ -132,12 +133,9 @@ class ReaderViewModel(
             paginator.pageCount.collect { _totalPages.value = it }
         }
 
-        // Start calculating pages
         paginator.calculatePages()
 
-        // Init TTS
         ttsEngine = TtsEngine(getApplication()) {
-            // Auto-advance to next page
             paginator.nextPage()
         }
     }
@@ -246,28 +244,28 @@ class ReaderViewModel(
 
     fun settingsLeft() {
         when (_settingsStep.value) {
-            SettingsStep.BG_COLOR -> { /* prev color */ }
-            SettingsStep.TEXT_COLOR -> { /* prev color */ }
-            SettingsStep.FONT_SIZE -> { /* prev font */ }
-            SettingsStep.FONT_FACE -> { /* prev face */ }
+            SettingsStep.BG_COLOR -> {}
+            SettingsStep.TEXT_COLOR -> {}
+            SettingsStep.FONT_SIZE -> {}
+            SettingsStep.FONT_FACE -> {}
             SettingsStep.DONE -> {}
         }
     }
 
     fun settingsRight() {
         when (_settingsStep.value) {
-            SettingsStep.BG_COLOR -> { /* next color */ }
-            SettingsStep.TEXT_COLOR -> { /* next color */ }
-            SettingsStep.FONT_SIZE -> { /* next font */ }
-            SettingsStep.FONT_FACE -> { /* next face */ }
+            SettingsStep.BG_COLOR -> {}
+            SettingsStep.TEXT_COLOR -> {}
+            SettingsStep.FONT_SIZE -> {}
+            SettingsStep.FONT_FACE -> {}
             SettingsStep.DONE -> {}
         }
     }
 
     fun settingsUp() {
         when (_settingsStep.value) {
-            SettingsStep.BG_COLOR -> { /* brightness + */ }
-            SettingsStep.TEXT_COLOR -> { /* brightness + */ }
+            SettingsStep.BG_COLOR -> {}
+            SettingsStep.TEXT_COLOR -> {}
             SettingsStep.FONT_SIZE -> {
                 viewModelScope.launch { settingsRepo.setFontSize(fontSize.value + 1f) }
             }
@@ -278,8 +276,8 @@ class ReaderViewModel(
 
     fun settingsDown() {
         when (_settingsStep.value) {
-            SettingsStep.BG_COLOR -> { /* brightness - */ }
-            SettingsStep.TEXT_COLOR -> { /* brightness - */ }
+            SettingsStep.BG_COLOR -> {}
+            SettingsStep.TEXT_COLOR -> {}
             SettingsStep.FONT_SIZE -> {
                 viewModelScope.launch { settingsRepo.setFontSize((fontSize.value - 1).coerceAtLeast(8).toFloat()) }
             }

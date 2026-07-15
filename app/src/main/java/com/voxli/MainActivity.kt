@@ -20,6 +20,7 @@ import com.voxli.ui.library.LibraryScreen
 import com.voxli.ui.library.LibraryViewModel
 import com.voxli.ui.player.PlayerScreen
 import com.voxli.ui.player.PlayerViewModel
+import com.voxli.ui.reader.ReaderMode
 import com.voxli.ui.reader.ReaderScreen
 import com.voxli.ui.reader.ReaderViewModel
 import org.koin.androidx.compose.koinViewModel
@@ -78,9 +79,11 @@ fun VoxliNavigation() {
         // ---- Genre filter ----
         composable(Routes.GENRE_FILTER) {
             val libViewModel: LibraryViewModel = koinViewModel()
+            val allGenres by libViewModel.allGenres.collectAsState()
             val selectedGenres by libViewModel.selectedGenres.collectAsState()
 
             GenreSelectionScreen(
+                allGenres = allGenres,
                 selectedGenres = selectedGenres,
                 onGenreToggle = { libViewModel.toggleGenre(it) },
                 onDone = { navController.popBackStack() },
@@ -108,7 +111,8 @@ fun VoxliNavigation() {
                 navArgument("bookId") { type = NavType.LongType },
                 navArgument("filePath") { type = NavType.StringType },
             ),
-        ) {
+        ) { backStackEntry ->
+            val bookId = backStackEntry.arguments?.getLong("bookId") ?: 0L
             val viewModel: ReaderViewModel = koinViewModel()
             val readerMode by viewModel.readerMode.collectAsState()
             val settingsStep by viewModel.settingsStep.collectAsState()
@@ -116,14 +120,29 @@ fun VoxliNavigation() {
             val currentPageIndex by viewModel.currentPageIndex.collectAsState()
             val totalPages by viewModel.totalPages.collectAsState()
             val isLoading by viewModel.isLoading.collectAsState()
+            val error by viewModel.error.collectAsState()
+
+            // Load book when entering screen
+            LaunchedEffect(bookId) {
+                viewModel.loadBook(bookId)
+            }
 
             if (isLoading) {
-                // Loading state
-                androidx.compose.foundation.layout.Box(
+                Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = androidx.compose.ui.Alignment.Center,
                 ) {
                     androidx.compose.material3.Text("Загрузка книги...")
+                }
+            } else if (error != null) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = androidx.compose.ui.Alignment.Center,
+                ) {
+                    androidx.compose.material3.Text(
+                        text = error ?: "Ошибка",
+                        color = androidx.compose.material3.MaterialTheme.colorScheme.error,
+                    )
                 }
             } else {
                 ReaderScreen(
@@ -132,7 +151,7 @@ fun VoxliNavigation() {
                     totalPages = totalPages,
                     readerMode = readerMode,
                     settingsStep = settingsStep,
-                    isTtsPlaying = false,  // TODO: wire TTS state
+                    isTtsPlaying = false,
                     ttsSpeed = 1.0f,
                     onTapZone1 = { navController.popBackStack() },
                     onTapZone2 = { viewModel.prevPage() },

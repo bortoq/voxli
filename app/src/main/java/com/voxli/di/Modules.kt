@@ -42,7 +42,7 @@ private val appModule = module {
     single { Mp3CacheCleaner(get()) }
 
     // ViewModels
-    viewModel { ReaderViewModel(get(), get(), get(), get()) }
+    viewModel { ReaderViewModel(get(), get(), get(), get(), get(), get()) }
     viewModel { PlayerViewModel(get(), get(), get(), get()) }
     viewModel { LibraryViewModel(get(), get(), get(), get()) }
 }
