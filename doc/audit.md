@@ -1,23 +1,23 @@
 # Voxli — Implementation Audit
 
 ## Phase 1 — Project scaffold (completed)
-
 ## Phase 2 — Reader (completed)
+
+## Phase 3 — Audio Player (completed)
 
 | Task | Status | Notes |
 |------|--------|-------|
-| FB2 parser | ✅ | `Fb2Parser` — XmlPullParser, extracts text + bold/italic/headers/images |
-| EPUB parser | ✅ | `EpubParser` — ZIP + XHTML, follows OPF spine order |
-| Paginator | ✅ | `Paginator` — StaticLayout-based, background thread, char_offset |
-| ReaderScreen: 5 tap zones | ✅ | Zones 1-5 + progress bar, TTS overlay, settings mode |
-| ReaderViewModel | ✅ | Paginator lifecycle, progress save/restore, TTS coordination |
-| TtsEngine | ✅ | Android TTS, page-by-page auto-advance via onDone, speed control |
-| Settings cycle (4 steps) | ✅ | BG_COLOR → TEXT_COLOR → FONT_SIZE → FONT_FACE → DONE |
-| Progress saving (char_offset) | ✅ | Auto-save on page change, restore on book load |
-| Koin integration | ✅ | ReaderViewModel registered with viewModel { } |
+| MP3 Downloader (with progress + resume) | ✅ | `AudioDownloader` — Range header resume, per-track progress |
+| Player UI | ✅ | `PlayerScreen` — cover, track list, play/pause, seek, speed, time |
+| PlayerViewModel | ✅ | `PlayerViewModel` — bind to service, position polling, progress save |
+| AudioPlaybackService | ✅ | ExoPlayer + hotlinking headers, playlist, notification, media session |
+| Android 14 MediaSession permissions | ✅ | Added in Phase 1, manifest has FOREGROUND_SERVICE_MEDIA_PLAYBACK |
+| LRU MP3 cache cleanup | ✅ | `Mp3CacheCleaner` — WorkManager daily, evict if <1GB free + >30 days |
+| Bluetooth Media Buttons | ✅ | MediaSession handles SKIP_TO_NEXT/PREVIOUS via ExoPlayer |
+| Koin integration | ✅ | AudioDownloader, Mp3CacheCleaner, PlayerViewModel registered |
 
 ## Files (all phases)
-See `git log --stat` for full list. 43 files total.
+See `git log --stat` for full list. 48 files total.
 
 | File | Status |
 |------|--------|
