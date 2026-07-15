@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">flibusta.is</domain>
+        <domain includeSubdomains="true">flibusta.site</domain>
+        <domain includeSubdomains="true">flibusta.net</domain>
+        <domain includeSubdomains="true">knigavuhe.org</domain>
+    </domain-config>
+</network-security-config>
