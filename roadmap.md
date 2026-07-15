@@ -221,8 +221,6 @@ LIMIT 50;
 
 ### Модули
 
-| Модуль | Описание |
-|--------|----------|
 | Пакет | Описание |
 |-------|----------|
 | `catalog.db` | Room: books + history + settings |
@@ -367,39 +365,6 @@ class Paginator(
             .setBreakStrategy(android.text.Layout.BreakStrategy.SIMPLE)
             .build()
     }
-}
-```
-
-**⚠️ Lifecycle пагинатора:**
-    private val document: DocumentModel,
-    private val pageWidth: Float,
-    private val pageHeight: Float,        // = viewport height - margins
-    private val textStyle: TextStyle,      // передан из Compose (Density, FontFamily)
-    private val density: Density,
-) {
-    private val pageCache = mutableMapOf<Int, Page>()  // in-memory кэш
-    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-
-    // Page = список блоков + charOffsetStart + charOffsetEnd
-    data class Page(
-        val blocks: List<ParagraphBlock>,
-        val charOffsetStart: Int,
-        val charOffsetEnd: Int,
-    )
-
-/**
- * Блок с форматированием. charOffset — сквозной индекс символа
- * по всему тексту книги (для сохранения прогресса).
- */
-data class ParagraphBlock(
-    val annotatedText: AnnotatedString,  // жирный, курсив, заголовки Compose
-    val globalCharStart: Int,
-    val globalCharEnd: Int,
-    val images: List<BookImage> = emptyList(),
-)
-
-    suspend fun getPage(n: Int): Page { ... }
-    suspend fun findPageByCharOffset(charOffset: Int): Int { ... }
 }
 ```
 
