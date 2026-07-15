@@ -51,6 +51,15 @@ PDF, MOBI, CBR/CBZ — не поддерживаются.
   2. Точное совпадение `(normalize(title), normalize(author))` — ~40% успеха.
   3. Совпадение по фамилии + первому слову названия — ещё ~30%.
   4. Levenshtein < 30% длины строки — ~20%. Выполняется в WorkManager, не блокирует UI.
+     **Важно**: перед вычислением Левенштейна — фильтрация кандидатов в SQLite:
+     ```sql
+     SELECT id, title, author FROM books
+     WHERE author LIKE :firstLetter '%'        -- первая буква фамилии
+       AND LENGTH(title) BETWEEN :minLen AND :maxLen  -- ±20% от длины исходного названия
+     LIMIT 100;
+     ```
+     Только для полученных 10–100 кандидатов вычисляется расстояние Левенштейна в Kotlin.
+     Полная выборка 300k строк в Kotlin не производится.
   5. Нет совпадения → `has_audio = 0` (лучше ложноотрицательный, чем ложноположительный).
 - Для shipped DB (топ-5000) матчинг выполняется скриптом однократно.
 
@@ -95,19 +104,47 @@ PDF, MOBI, CBR/CBZ — не поддерживаются.
 
 **FTS5 для поиска:**
 ```sql
+-- Виртуальная таблица с внешним контентом
 CREATE VIRTUAL TABLE books_fts USING fts5(
-    title, author, content=books, content_rowid=id
+    title, author, content=books, content_rowid=id,
+    tokenize='unicode61 remove_diacritics 1'
 );
+
+-- Триггеры: для content=books требуется двухэтапное 'delete' + insert
+CREATE TRIGGER books_ai AFTER INSERT ON books BEGIN
+    INSERT INTO books_fts(rowid, title, author) VALUES (new.id, new.title, new.author);
+END;
+
+CREATE TRIGGER books_ad AFTER DELETE ON books BEGIN
+    INSERT INTO books_fts(books_fts, rowid, title, author) VALUES ('delete', old.id, old.title, old.author);
+END;
+
+CREATE TRIGGER books_au AFTER UPDATE ON books BEGIN
+    INSERT INTO books_fts(books_fts, rowid, title, author) VALUES ('delete', old.id, old.title, old.author);
+    INSERT INTO books_fts(rowid, title, author) VALUES (new.id, new.title, new.author);
+END;
 
 -- Поиск: 5–20 мс на 300k записей
 SELECT b.* FROM books b
 JOIN books_fts ON b.id = books_fts.rowid
-WHERE books_fts MATCH 'война'
+WHERE books_fts MATCH ?
 ORDER BY rank
 LIMIT 50;
 ```
 - **Debounce** ввода: 300 мс после последнего символа.
-- **Триггеры** для синхронизации FTS5 с таблицей books: INSERT / UPDATE / DELETE → UPDATE books_fts.
+- **Санитизация запроса** (экранирование спецсимволов FTS5: `: - " * ( )`):
+  ```kotlin
+  fun sanitizeFtsQuery(query: String): String {
+      return query.trim()
+          .split(Regex("\\s+"))
+          .filter { it.isNotBlank() }
+          .joinToString(" ") { "\"${it.replace("\"", "\"\"")}\"*" }
+  }
+  // "война и мир 1869" → ""война"* "и"* "мир"* "1869"*"
+  ```
+- **Русская морфология**: стемминг не используется (FTS5 не поддерживает русский стеммер).
+  Компенсация: все слова поиска автоматически получают суффикс `*` (префиксный поиск).
+  `"война"` → `"война"*` находит `война`, `войне`, `войны`, `войной`.
 - `rank = BM25` — встроенная релевантность FTS5.
 
 ### 4.3. Таблица: history
@@ -116,12 +153,16 @@ LIMIT 50;
 |------|-----|----------|
 | book_id | INTEGER | id из books |
 | status | TEXT | 'reading' / 'listening' / 'finished' / 'dropped' |
-| current_page | INTEGER | Номер страницы (для текста) |
-| progress | REAL | 0.0–1.0 |
+| **char_offset** | **INTEGER** | **Индекс символа в тексте книги (для текста)** |
+| progress | REAL | 0.0–1.0 (производное от char_offset / total_chars) |
 | playback_pos | INTEGER | Позиция в мс (для аудио) |
 | started_at | TEXT | — |
 | finished_at | TEXT | — |
 | updated_at | TEXT | — |
+
+**Почему char_offset, а не current_page**: номер страницы меняется при смене шрифта/размера/ориентации.
+Индекс символа (символ N от начала текста) инвариантен к настройкам отображения.
+Пагинатор восстанавливает позицию: `paginator.findPageByCharOffset(savedCharOffset)`.
 
 ### 4.4. Таблица: settings
 
@@ -267,16 +308,22 @@ LIMIT 50;
 class Paginator(
     private val document: DocumentModel,
     private val pageWidth: Float,
-    private val measureText: (String, TextStyle) -> Float,
+    private val pageHeight: Float,        // = viewport height - margins
+    private val textStyle: TextStyle,      // передан из Compose (Density, FontFamily)
+    private val density: Density,
 ) {
     private val pageCache = mutableMapOf<Int, Page>()  // in-memory кэш
-    private val scope = CoroutineScope(Dispatchers.Default)
+    private val scope = CoroutineScope(Dispatchers.Default + supervisorJob)
 
-    suspend fun getPage(n: Int): Page {
-        val cached = pageCache[n]; if (cached != null) return cached
-        // рассчить все страницы от последней известной до n
-        // сохранить в pageCache
-    }
+    // Page = список блоков + charOffsetStart + charOffsetEnd
+    data class Page(
+        val blocks: List<Block>,
+        val charOffsetStart: Int,
+        val charOffsetEnd: Int,
+    )
+
+    suspend fun getPage(n: Int): Page { ... }
+    suspend fun findPageByCharOffset(charOffset: Int): Int { ... }
 }
 ```
 
@@ -284,7 +331,9 @@ class Paginator(
 - При открытии книги: рассчитать первые 20 страниц на фоне (~50 мс). Показывать спиннер.
 - При перелистывании: страница из кэша → мгновенно. Если нет → расчёт на фоне.
 - При изменении шрифта/размера: очистить кэш, пересчитать заново.
-- Сохраняется `current_page` (номер), не scroll-позиция. При повторном открытии — `paginator.getPage(savedPage)`.
+- **Сохраняется `char_offset`**, не номер страницы (см. §4.3).
+- При повторном открытии: `paginator.findPageByCharOffset(savedCharOffset)`.
+- `Density` и `TextStyle` передаются из UI-контекста в конструктор пагинатора при создании (через ViewModel / Factory).
 
 ### 7.6. TTS — авто-листание страниц
 
@@ -478,11 +527,11 @@ class Paginator(
 ### Фаза 2: Читалка (v0.2)
 
 - [ ] FB2/EPUB парсеры из TextLector (Apache 2.0)
-- [ ] Пагинатор: разбивка текста на страницы
+- [ ] Пагинатор: разбивка текста на страницы (async, char_offset, Density из UI)
 - [ ] UI читалки: зоны тапа (◄ ► ▲ ▼ центр + прогресс-бар)
 - [ ] Пагинация: перелистывание вперёд/назад
 - [ ] TTS: Android TextToSpeech API, play/pause, автоматическое перелистывание
-- [ ] Сохранение прогресса: (book_id, current_page) → history
+- [ ] Сохранение прогресса: (book_id, char_offset) → history
 - [ ] Восстановление при запуске: последняя книга → last_page
 
 ### Фаза 3: Аудиоплеер (v0.3)
@@ -859,22 +908,55 @@ class CatalogUpdateWorker : CoroutineWorker() {
 
 При недоступности текущего зеркала — автоматическое переключение на следующее из списка (с сохранением выбора в DataStore).
 
+**Cleartext (HTTP):** Android 9+ блокирует HTTP. Добавить разрешение в `res/xml/network_security_config.xml`:
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">flibusta.is</domain>
+        <domain includeSubdomains="true">flibusta.site</domain>
+        <domain includeSubdomains="true">flibusta.net</domain>
+        <domain includeSubdomains="true">knigavuhe.org</domain>
+    </domain-config>
+</network-security-config>
+```
+
+**Смена зеркал:** домены блокируются каждый месяц. Хардкод в APK требует пересборки.
+Решение: активный список зеркал получать из удалённого fallback (raw-файл GitHub Gist или JSON на надёжном хостинге).
+При каждом запуске — HEAD-запрос к fallback-источнику. Если ответ 200 → обновить список зеркал в DataStore.
+
 ### 15.2. DNS-over-HTTPS (DoH)
 
-В Ktor-клиенте настроить DoH через Cloudflare `1.1.1.1` / Google `8.8.8.8`:
+Использовать OkHttp (не Ktor CIO) — в OkHttp есть официальная поддержка `DnsOverHttps`:
 
 ```kotlin
-val client = HttpClient(CIO) {
-    install(Doh) {
-        hosts = listOf(
-            "https://cloudflare-dns.com/dns-query",
-            "https://dns.google/dns-query"
-        )
-    }
+val dependencies {
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0")
 }
 ```
 
-Это обходит блокировки DNS на уровне провайдера без настройки VPN/прокси.
+```kotlin
+val appCache = Cache(File(context.cacheDir, "http_cache"), 10L * 1024L * 1024L)
+val bootstrapClient = OkHttpClient.Builder().cache(appCache).build()
+
+val dns = DnsOverHttps.Builder()
+    .client(bootstrapClient)
+    .url("https://cloudflare-dns.com/dns-query".toHttpUrl())
+    .bootstrapDnsHosts(InetAddress.getByName("1.1.1.1"), InetAddress.getByName("1.0.0.1"))
+    .build()
+
+val okHttpClient = OkHttpClient.Builder()
+    .dns(dns)
+    .build()
+
+// Ktor использует OkHttp engine
+val client = HttpClient(OkHttp) {
+    engine { preconfigured = okHttpClient }
+}
+```
+
+Зависимость: добавить `okhttp-dnsoverhttps` в build.gradle. Это обходит блокировки DNS на уровне провайдера без настройки VPN/прокси.
 
 ### 15.3. User-Agent и заголовки
 
