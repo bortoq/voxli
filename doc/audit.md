@@ -35,37 +35,59 @@ See `git log --stat` for full list. Key files:
 
 ## Checklist (from roadmap §10 Phase 1)
 
-- [x] Создание Android-проекта (Gradle, модули, Koin DI)
-- [ ] SQLite-схема: books + history + settings ✅ код есть, **но** seed DB не сгенерирован
-- [ ] FlibustaProvider: OPDS-обход, парсинг HTML страницы книги ✅ (Ksoup-парсер — TODO)
-- [ ] KnigavuheMatcher: поиск аудио по (title, author), извлечение URL ✅ (regex парсер — TODO Ksoup)
-- [ ] Загрузчик книг: скачивание FB2/EPUB в кэш ❌ (не реализован)
-- [ ] UI библиотеки: верхняя панель (поиск + цикл авторы/названия) ✅ (базовый UI)
-- [ ] UI: список авторов/названий ✅ (каркас с Placeholder)
-- [ ] UI: нижняя панель (цикл: сортировка, жанры, цвета, шрифт) ✅ (базовый BottomSettingsBar)
-- [ ] UI: экран жанров (22 чекбокса) ❌
-- [ ] DataStore: сохранение настроек ❌
+| Task | Status | Notes |
+|------|--------|-------|
+| Gradle-структура (Kotlin 2.0.21, Compose BOM, Room, Koin, OkHttp) | ✅ | version catalog `gradle/libs.versions.toml` |
+| SQLite-схема: books + history + settings + FTS5 | ✅ | Entity + DAO + FTS5 triggers в Callback |
+| FlibustaProvider: OPDS + HTML парсер | ✅ | Mirror switching, `withContext(IO)`, Ksoup — todo |
+| KnigavuheMatcher: fuzzy matching + narrators | ✅ | ConcurrentHashMap, regex parser — todo Ksoup |
+| Загрузчик книг (FB2/EPUB в кэш) | ❌ | Phase 2 |
+| UI библиотеки: поиск + авторы/названия | ✅ | Basic Compose screen with mock data |
+| UI библиотеки: список авторов | ✅ | Placeholder items |
+| UI библиотеки: список названий | ✅ | Placeholder items |
+| UI библиотеки: нижняя панель (сортировка/жанры/цвета/шрифт) | ✅ | BottomSettingsBar stub |
+| UI библиотеки: экран жанров (22 чекбокса) | ❌ | Not implemented |
+| DataStore: настройки | ❌ | Not implemented (Room `settings` table exists) |
 
-## Fixes Needed
+## Roadmap Spec Compliance
 
-- [ ] `Ktor` полностью исключён ✅
-- [ ] `OkHttp` + `okhttp-dnsoverhttps` ✅
-- [ ] `StaticLayout` для background измерения ✅ (в spec, код пагинатора — Phase 2)
-- [ ] `DocumentModel` / `BookParser` контракт ✅
-- [ ] `ConcurrentHashMap` для NarratorCache ✅
-- [ ] `SupervisorJob()` вместо `supervisorJob` ✅
-- [ ] Пакеты в одном `:app` модуле ✅
+| Requirement | Status |
+|-------------|--------|
+| Ktor исключён, только OkHttp | ✅ |
+| `okhttp-dnsoverhttps` | ✅ |
+| `StaticLayout` для background-измерения | ✅ (spec, код в Phase 2) |
+| `DocumentModel` / `BookParser` контракт | ✅ |
+| `ConcurrentHashMap` для NarratorCache | ✅ |
+| `SupervisorJob()` | ✅ |
+| Пакеты в одном `:app`-модуле | ✅ |
+| `withContext(Dispatchers.IO)` для блокирующих вызовов | ✅ |
+| Graceful fallback для seed DB | ✅ |
+| FTS5 triggers с синтаксисом 'delete' | ✅ |
+| `sanitizeFtsQuery()` | ✅ |
+| ExoPlayer hotlinking headers (User-Agent, Referer) | ✅ |
+| network_security_config.xml для HTTP | ✅ |
+| Android 14 MediaSession permissions | ✅ |
+| Bluetooth Media Buttons (ACTION_SKIP_TO_NEXT/PREV) | ⏳ (Phase 3) |
 
-## Code Issues Found
+## Code Issues Found (fixed during audit)
 
-1. **Blocking OkHttp calls in suspend functions** — `FlibustaProvider.fetchUrl()` and `KnigavuheMatcher.fetchHtml()` use `.execute()` without `withContext(Dispatchers.IO)`. Will crash if called from Main dispatcher. **Fix below.**
+| # | Issue | Fix |
+|---|-------|-----|
+| 1 | Blocking OkHttp calls in suspend functions | ✅ wrapped with `withContext(Dispatchers.IO)` |
+| 2 | `createFromAsset` crash if seed DB absent | ✅ graceful try/catch fallback |
+| 3 | `HistoryDao.getAllHistory()` column mapping | ✅ explicit SQL aliases (`AS bookId`, etc) |
+| 4 | unused `getRandomBooks()` | ✅ replaced with `getBooksNeedingAudioCheck()` |
+| 5 | Missing `org.gradle.jvmargs` | ✅ set in `gradle.properties` |
+| 6 | No gradlew scripts | ⚠️ generate via `gradle wrapper` on dev machine |
 
-2. **Seed DB not generated** — `createFromAsset("databases/voxli_seed.db")` will crash if file missing. Need graceful fallback.
+## Remaining for Phase 1
 
-3. **DataStore not wired** — Settings are meant to use DataStore but only Room `settings` table is created.
-
-4. **BookDownloader missing** — No download manager for FB2/EPUB files.
-
-5. **Genre screen missing** — 22 flibusta genres with checkboxes not implemented.
-
-6. **gradlew script missing** — Cannot build without Gradle wrapper scripts.
+- [ ] Generate `gradlew` scripts (requires Gradle SDK on dev machine)
+- [ ] Generate `voxli_seed.db` (separate Python/Kotlin script, roadmap §14.3)
+- [ ] Implement Ksoup-based OPDS/HTML parsers in FlibustaProvider
+- [ ] Implement Ksoup-based HTML parsers in KnigavuheMatcher
+- [ ] Implement BookDownloader (download FB2/EPUB to cache dir)
+- [ ] Implement GenreSelectionScreen (22 checkboxes)
+- [ ] Wire DataStore for settings
+- [ ] Wire ViewModel + Repository layers for live data
+- [ ] Write unit tests for DAOs, FtsQuery, sanitizeFtsQuery, KnigavuheMatcher

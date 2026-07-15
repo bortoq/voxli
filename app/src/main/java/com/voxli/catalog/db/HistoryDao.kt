@@ -7,7 +7,13 @@ interface HistoryDao {
     @Query("SELECT * FROM history WHERE book_id = :bookId")
     suspend fun getHistory(bookId: Long): HistoryEntity?
 
-    @Query("SELECT h.*, b.title, b.author, b.genre FROM history h JOIN books b ON h.book_id = b.id ORDER BY h.updated_at DESC")
+    @Query("""
+        SELECT h.book_id AS bookId, h.status, h.char_offset AS charOffset, h.progress,
+               h.playback_pos AS playbackPos, h.started_at AS startedAt, h.finished_at AS finishedAt,
+               h.updated_at AS updatedAt, b.title, b.author, b.genre
+        FROM history h JOIN books b ON h.book_id = b.id
+        ORDER BY h.updated_at DESC
+    """)
     suspend fun getAllHistory(): List<HistoryWithBook>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
