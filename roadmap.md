@@ -338,6 +338,11 @@ data class ParagraphBlock(
 }
 ```
 
+**⚠️ Lifecycle пагинатора:** Внутри пагинатора собственный `CoroutineScope(Dispatchers.Default + supervisorJob)`. 
+При уничтожении ViewModel читалки **обязательно вызывать `paginator.cancel()`**, иначе фоновые
+задачи предрасчёта страниц продолжат висеть после выхода из книги — утечка корутин + лишняя
+нагрузка на CPU.
+
 **Стратегия:**
 - При открытии книги: рассчитать первые 20 страниц на фоне (~50 мс). Показывать спиннер.
 - При перелистывании: страница из кэша → мгновенно. Если нет → расчёт на фоне.
@@ -552,7 +557,7 @@ data class ParagraphBlock(
 - [ ] UI плеера: обложка, треки, прогресс
 - [ ] Фоновое воспроизведение (MediaSession)
 
-**⚠️ Android 14 (API 34): обязательные требования для фонового аудио:**
+**⚠️ Android 14 (API 34): обязательные требования для фонового аудио:
 ```xml
 <!-- AndroidManifest.xml -->
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -574,6 +579,18 @@ data class ParagraphBlock(
 **Очистка кэша MP3 (LRU):** аудиокниги весят 200 МБ – 1.5 ГБ. При инициализации плеера
 проверять свободное место. Если < 1 ГБ — удалять MP3-файлы книг, не открывавшихся > 30 дней.
 Механизм: WorkManager раз в сутки, или при старте плеера.
+
+**Гарнитура (Bluetooth Media Buttons):** Media3 MediaSession из коробки обрабатывает
+одинарное нажатие (play/pause). Для двойного/тройного нажатия (next/prev трек) необходимо
+убедиться, что `MediaSession.Callback` корректно обрабатывает `onSkipToNext()`/`onSkipToPrevious()`
+и что в `PlaybackState` выставлены `state actions`:
+```kotlin
+player.playbackState.apply {
+    stateActions += PlaybackStateCompat.ACTION_SKIP_TO_NEXT
+    stateActions += PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
+}
+```
+Без этого двойное нажатие будет игнорироваться ОС.
 
 ### Фаза 4: Поиск + полировка (v0.4)
 
@@ -936,6 +953,14 @@ IllegalStateException: Pre-packaged database has an invalid schema.
 `app/build/generated/ksp/debug/resources/schemas/.../1.json`). Скрипт генерации seed.db
 должен использовать **точно те же** CREATE TABLE / CREATE INDEX / CREATE TRIGGER, что в
 этом JSON. После чего `VACUUM` и копирование в assets.
+
+**ℹ️ Чтобы Room сгенерировал JSON схемы**, в `app/build.gradle.kts` нужно добавить:
+```kotlin
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+```
+Без этого аргумента папка `schemas` будет пуста, и скрипт не сможет сверить DDL.
 
 Room при первом запуске копирует `assets/databases/voxli_seed.db` → `databases/voxli.db`.
 Далее — инкрементальные обновления через OPDS new/since.
