@@ -25,7 +25,7 @@ class KnigavuheMatcher(
      */
     suspend fun searchBook(title: String, author: String): String? {
         val query = "$title $author".trim()
-        val url = "$baseUrl/search/?q=${okhttp3.HttpUrl.Companion.encode(query)}"
+        val url = "$baseUrl/search/?q=${java.net.URLEncoder.encode(query, "UTF-8")}"
         val html = fetchHtml(url) ?: return null
         return parseSearchResults(html, title, author)
     }

@@ -72,7 +72,6 @@ class AudioPlaybackService : MediaSessionService() {
             MediaItem.Builder()
                 .setMediaId(track.url)
                 .setUri(track.url)
-                .setTitle(track.title)
                 .build()
         }
 
@@ -129,6 +128,13 @@ class AudioPlaybackService : MediaSessionService() {
     }
 
     /**
+     * Seek to the default start position of a specific media item (track).
+     */
+    fun seekToDefaultPosition(mediaItemIndex: Int) {
+        player?.seekToDefaultPosition(mediaItemIndex)
+    }
+
+    /**
      * Set playback speed.
      */
     fun setSpeed(speed: Float) {
@@ -152,6 +158,12 @@ class AudioPlaybackService : MediaSessionService() {
      */
     val isPlaying: Boolean
         get() = player?.isPlaying ?: false
+
+    /**
+     * Current media item index (track number).
+     */
+    val currentMediaItemIndex: Int
+        get() = player?.currentMediaItemIndex ?: 0
 
     /**
      * Release player resources.

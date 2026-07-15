@@ -6,6 +6,8 @@ import com.voxli.catalog.db.BookDao
 import com.voxli.catalog.db.BookEntity
 import com.voxli.catalog.db.HistoryDao
 import com.voxli.catalog.db.HistoryWithBook
+import com.voxli.catalog.db.buildAuthorFtsQuery
+import com.voxli.catalog.db.buildBookFtsQuery
 import com.voxli.catalog.db.sanitizeFtsQuery
 import com.voxli.flibusta.provider.FlibustaProvider
 import com.voxli.settings.SettingsRepository
@@ -109,15 +111,17 @@ class LibraryViewModel(
             return
         }
 
-        val ftsQuery = sanitizeFtsQuery(query)
+        val sanitized = sanitizeFtsQuery(query)
 
         when (_viewMode.value) {
             LibraryViewMode.AUTHORS -> {
-                val results = bookDao.searchAuthorsFts(ftsQuery)
+                val sqlQuery = buildAuthorFtsQuery(sanitized)
+                val results = bookDao.searchAuthorsFts(sqlQuery)
                 _authors.value = results
             }
             LibraryViewMode.TITLES -> {
-                val results = bookDao.searchBooksFts(ftsQuery)
+                val sqlQuery = buildBookFtsQuery(sanitized)
+                val results = bookDao.searchBooksFts(sqlQuery)
                 _books.value = results
             }
         }
@@ -129,10 +133,11 @@ class LibraryViewModel(
         val newMode = when (_viewMode.value) {
             LibraryViewMode.AUTHORS -> LibraryViewMode.TITLES
             LibraryViewMode.TITLES -> LibraryViewMode.AUTHORS
+            else -> LibraryViewMode.AUTHORS
         }
         _viewMode.value = newMode
         _filterAuthor.value = null
-        performSearch()
+        viewModelScope.launch { performSearch() }
     }
 
     /** Navigate to author-specific book list. */

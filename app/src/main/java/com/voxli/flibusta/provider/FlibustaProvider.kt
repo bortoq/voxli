@@ -60,10 +60,10 @@ class FlibustaProvider(
     fun opdsNewUrl(offset: Int = 0): String = "$activeMirror$OPDS_NEW?offset=$offset"
 
     fun opdsSearchBooksUrl(query: String): String =
-        "$activeMirror$OPDS_SEARCH_BOOKS${okhttp3.HttpUrl.Companion.encode(query)}"
+        "$activeMirror$OPDS_SEARCH_BOOKS${java.net.URLEncoder.encode(query, "UTF-8")}"
 
     fun opdsSearchAuthorsUrl(query: String): String =
-        "$activeMirror$OPDS_SEARCH_AUTHORS${okhttp3.HttpUrl.Companion.encode(query)}"
+        "$activeMirror$OPDS_SEARCH_AUTHORS${java.net.URLEncoder.encode(query, "UTF-8")}"
 
     fun bookPageUrl(bookId: Long): String = "$activeMirror$BOOK_PAGE$bookId/"
 

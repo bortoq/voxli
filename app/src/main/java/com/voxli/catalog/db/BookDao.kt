@@ -1,6 +1,7 @@
 package com.voxli.catalog.db
 
 import androidx.room.*
+import androidx.sqlite.db.SupportSQLiteQuery
 
 @Dao
 interface BookDao {
@@ -34,24 +35,13 @@ interface BookDao {
     @Query("DELETE FROM books WHERE id = :bookId")
     suspend fun deleteBookById(bookId: Long)
 
-    // FTS5 search via raw query (see VoxliDatabase for FTS trigger setup)
-    @Query("""
-        SELECT b.* FROM books b
-        JOIN books_fts ON b.id = books_fts.rowid
-        WHERE books_fts MATCH :query
-        ORDER BY rank
-        LIMIT 50
-    """)
-    suspend fun searchBooksFts(query: String): List<BookEntity>
+    // FTS5 search via raw query (see VoxliDatabase for FTS trigger setup).
+    // @RawQuery is used because Room does not natively support FTS5 tables.
+    @RawQuery(observedEntities = [BookEntity::class])
+    suspend fun searchBooksFts(query: SupportSQLiteQuery): List<BookEntity>
 
-    @Query("""
-        SELECT DISTINCT b.author FROM books b
-        JOIN books_fts ON b.id = books_fts.rowid
-        WHERE books_fts MATCH :query
-        ORDER BY b.author COLLATE NOCASE
-        LIMIT 50
-    """)
-    suspend fun searchAuthorsFts(query: String): List<String>
+    @RawQuery(observedEntities = [BookEntity::class])
+    suspend fun searchAuthorsFts(query: SupportSQLiteQuery): List<String>
 
     @Query("SELECT * FROM books WHERE has_audio = 0 ORDER BY RANDOM() LIMIT :limit")
     suspend fun getBooksNeedingAudioCheck(limit: Int = 100): List<BookEntity>

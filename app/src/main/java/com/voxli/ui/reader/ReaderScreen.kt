@@ -196,7 +196,7 @@ fun ReaderScreen(
                 .fillMaxWidth()
                 .height(progressBarHeight)
                 .align(Alignment.BottomCenter)
-                .offset(y = (-bottomZoneHeight).let { /* just below zone 5 */ })
+                .offset(y = -bottomZoneHeight)
                 .background(textColor.copy(alpha = 0.15f))
                 .clickable { onProgressBarTap() },
             contentAlignment = Alignment.CenterStart,

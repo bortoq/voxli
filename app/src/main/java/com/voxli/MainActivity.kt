@@ -22,7 +22,7 @@ import com.voxli.ui.player.PlayerScreen
 import com.voxli.ui.player.PlayerViewModel
 import com.voxli.ui.reader.ReaderScreen
 import com.voxli.ui.reader.ReaderViewModel
-import org.koin.compose.viewmodel.koinViewModel
+import org.koin.androidx.compose.koinViewModel
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {

@@ -29,8 +29,9 @@ class Fb2Parser : BookParser {
 
         file.inputStream().use { stream ->
             parser.setInput(stream, "UTF-8")
-            currentTitle = parseFb2(parser, paragraphs, charOffset).also { charOffset = it.first }
-            // Actually parseFb2 returns charOffset as second value and title as first
+            val result = parseFb2(parser, paragraphs, charOffset)
+            currentTitle = result.title
+            charOffset = result.totalChars
         }
 
         // Re-read to extract title and author properly

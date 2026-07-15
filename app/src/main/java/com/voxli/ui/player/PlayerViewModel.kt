@@ -47,9 +47,9 @@ class PlayerViewModel(
     private val _tracks = MutableStateFlow<List<TrackInfo>>(emptyList())
     val tracks: StateFlow<List<TrackInfo>> = _tracks.asStateFlow()
 
-    // Convenience for track titles
-    val trackTitles: StateFlow<List<String>> = _tracks.map { list -> list.map { it.title } }
-        .asStateFlow()
+    // Convenience for track titles — set alongside _tracks in loadBook
+    private val _trackTitles = MutableStateFlow<List<String>>(emptyList())
+    val trackTitles: StateFlow<List<String>> = _trackTitles.asStateFlow()
 
     // ---- Playback state ----
     private val _currentTrackIndex = MutableStateFlow(0)
@@ -84,6 +84,7 @@ class PlayerViewModel(
         _bookAuthor.value = bookAuthor
         _narratorName.value = narratorInfo.name
         _tracks.value = narratorInfo.tracks
+        _trackTitles.value = narratorInfo.tracks.map { it.title }
 
         // Restore progress from history
         viewModelScope.launch {
@@ -147,13 +148,13 @@ class PlayerViewModel(
     fun nextTrack() {
         val svc = playbackService ?: return
         svc.next()
-        _currentTrackIndex.value = (svc.player?.currentMediaItemIndex ?: 0)
+        _currentTrackIndex.value = svc.currentMediaItemIndex
     }
 
     fun previousTrack() {
         val svc = playbackService ?: return
         svc.previous()
-        _currentTrackIndex.value = (svc.player?.currentMediaItemIndex ?: 0)
+        _currentTrackIndex.value = svc.currentMediaItemIndex
     }
 
     fun seekTo(progress: Float) {
@@ -172,7 +173,7 @@ class PlayerViewModel(
 
     fun selectTrack(index: Int) {
         val svc = playbackService ?: return
-        svc.player?.seekToDefaultPosition(index)
+        svc.seekToDefaultPosition(index)
         _currentTrackIndex.value = index
         if (!svc.isPlaying) {
             svc.play()
@@ -190,7 +191,7 @@ class PlayerViewModel(
                 val svc = playbackService ?: break
                 _currentPositionMs.value = svc.currentPosition
                 _totalDurationMs.value = svc.duration
-                _currentTrackIndex.value = svc.player?.currentMediaItemIndex ?: 0
+                _currentTrackIndex.value = svc.currentMediaItemIndex
                 _isPlaying.value = svc.isPlaying
 
                 // Save progress periodically
@@ -216,7 +217,7 @@ class PlayerViewModel(
 
         // Calculate total playback position across all tracks
         var totalMs = svc.currentPosition
-        val currentIdx = svc.player?.currentMediaItemIndex ?: 0
+        val currentIdx = svc.currentMediaItemIndex
         for (i in 0 until currentIdx) {
             totalMs += tracks.getOrNull(i)?.durationSeconds?.times(1000) ?: 0
         }

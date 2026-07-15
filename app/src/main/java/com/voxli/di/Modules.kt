@@ -20,8 +20,8 @@ import org.koin.dsl.module
 
 private val appModule = module {
     // Network
-    single<OkHttpClient> { NetworkModule.provideOkHttpClient(get().cacheDir) }
-    single { NetworkModule.provideDoHClient(get().cacheDir) }
+    single<OkHttpClient> { NetworkModule.provideOkHttpClient(get<Application>().cacheDir) }
+    single { NetworkModule.provideDoHClient(get<Application>().cacheDir) }
 
     // Database
     single { VoxliDatabase.create(get()) }

@@ -9,6 +9,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 /**
@@ -47,8 +48,8 @@ class Paginator(
                 textPaint, pageWidthPx
             )
                 .setLineSpacing(0f, 1.0f)
-                .setBreakStrategy(Layout.BreakStrategy.SIMPLE)
-                .setHyphenationFrequency(Layout.HyphenationFrequency.NONE)
+                .setBreakStrategy(Layout.BREAK_STRATEGY_SIMPLE)
+                .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
                 .build()
 
             ParagraphLayout(block, layout)
