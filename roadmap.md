@@ -223,15 +223,19 @@ LIMIT 50;
 
 | Модуль | Описание |
 |--------|----------|
-| `catalog-db` | Room: books + history + settings |
-| `flibusta-provider` | OPDS-клиент + HTML-парсер страницы книги |
-| `knigavuhe-matcher` | Поиск аудио по (title, author), извлечение URL |
-| `reader-engine` | FB2/EPUB парсеры (TextLector, Apache 2.0) + пагинатор |
-| `audio-engine` | Загрузчик MP3 + Media3 плеер |
-| `tts-engine` | Android TTS API |
-| `ui-library` | Экран библиотеки (авторы/названия/поиск/настройки) |
-| `ui-reader` | Экран чтения (пагинация, TTS, прогресс) |
-| `ui-player` | Экран аудиоплеера |
+| Пакет | Описание |
+|-------|----------|
+| `catalog.db` | Room: books + history + settings |
+| `flibusta.provider` | OPDS-клиент + HTML-парсер страницы книги |
+| `knigavuhe.matcher` | Поиск аудио по (title, author), извлечение URL |
+| `reader.engine` | FB2/EPUB парсеры (TextLector, Apache 2.0) + пагинатор |
+| `audio.engine` | Загрузчик MP3 + Media3 плеер |
+| `tts.engine` | Android TTS API |
+| `ui.library` | Экран библиотеки (авторы/названия/поиск/настройки) |
+| `ui.reader` | Экран чтения (пагинация, TTS, прогресс) |
+| `ui.player` | Экран аудиоплеера |
+
+> **Для v0.1** — все пакеты в одном Gradle-модуле `:app`. Разделение на Gradle-модули — при превышении 10k строк кода или необходимости тестировать изолированно.
 
 ---
 
@@ -301,11 +305,72 @@ LIMIT 50;
 
 ### 7.5. Пагинатор — разбивка текста на страницы
 
-**Критично: асинхронный расчёт в фоновом потоке.**
+**⚠️ Измерение текста:** Используется `StaticLayout` (Android SDK) — thread-safe,
+работает на `Dispatchers.Default`. Compose-стили конвертируются в `TextPaint` один раз
+при создании пагинатора. Inline-форматирование (жирный/курсив) при измерении игнорируется
+для скорости; `AnnotatedString` отдаётся в UI как есть, Compose сам применит SpanStyle.
+
+**Контракт между парсерами и пагинатором:**
+
+```kotlin
+// reader-engine — интерфейс
+interface BookParser {
+    suspend fun parse(file: File): DocumentModel
+}
+
+data class DocumentModel(
+    val bookId: Long,
+    val title: String,
+    val author: String,
+    val paragraphs: List<ParagraphBlock>,
+    val totalChars: Int,
+)
+
+data class ParagraphBlock(
+    val annotatedText: AnnotatedString,
+    val globalCharStart: Int,
+    val globalCharEnd: Int,
+    val images: List<BookImage> = emptyList(),
+)
+
+data class BookImage(
+    val bytes: ByteArray? = null,   // загруженные данные (v1 — только если есть)
+    val url: String? = null,        // отложенная загрузка (post-MVP)
+    val altText: String = "",
+)
+```
 
 ```kotlin
 // Пагинатор работает на Dispatchers.Default, не блокирует UI
 class Paginator(
+    private val document: DocumentModel,
+    private val pageWidthPx: Float,   // в пикселях, переведено из Compose заранее
+    private val pageHeightPx: Float,
+    private val textPaint: TextPaint, // сконвертирован из TextStyle+Density на UI-треде
+) {
+    private val pageCache = mutableMapOf<Int, Page>()
+    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+
+    data class Page(
+        val blocks: List<ParagraphBlock>,
+        val charOffsetStart: Int,
+        val charOffsetEnd: Int,
+    )
+
+    suspend fun getPage(n: Int): Page { ... }
+    suspend fun findPageByCharOffset(charOffset: Int): Int { ... }
+
+    private fun measureParagraph(block: ParagraphBlock): StaticLayout {
+        val text = block.annotatedText.text
+        return StaticLayout.Builder.obtain(text, 0, text.length, textPaint, pageWidthPx.toInt())
+            .setLineSpacing(0f, 1.0f)
+            .setBreakStrategy(android.text.Layout.BreakStrategy.SIMPLE)
+            .build()
+    }
+}
+```
+
+**⚠️ Lifecycle пагинатора:**
     private val document: DocumentModel,
     private val pageWidth: Float,
     private val pageHeight: Float,        // = viewport height - margins
@@ -313,7 +378,7 @@ class Paginator(
     private val density: Density,
 ) {
     private val pageCache = mutableMapOf<Int, Page>()  // in-memory кэш
-    private val scope = CoroutineScope(Dispatchers.Default + supervisorJob)
+    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     // Page = список блоков + charOffsetStart + charOffsetEnd
     data class Page(
@@ -338,10 +403,12 @@ data class ParagraphBlock(
 }
 ```
 
-**⚠️ Lifecycle пагинатора:** Внутри пагинатора собственный `CoroutineScope(Dispatchers.Default + supervisorJob)`. 
+**⚠️ Lifecycle пагинатора:** Внутри пагинатора собственный `CoroutineScope(Dispatchers.Default + SupervisorJob())`. 
 При уничтожении ViewModel читалки **обязательно вызывать `paginator.cancel()`**, иначе фоновые
 задачи предрасчёта страниц продолжат висеть после выхода из книги — утечка корутин + лишняя
 нагрузка на CPU.
+
+**Изображения в тексте:** для v1 — placeholder (серый прямоугольник). Загрузка — отложена до post-MVP. Блок с `images.isNotEmpty()` занимает фиксированную высоту (100dp) и рендерится как `Box(Modifier.background(Color.Gray).height(100.dp))` при отсутствии `bytes`.
 
 **Стратегия:**
 - При открытии книги: рассчитать первые 20 страниц на фоне (~50 мс). Показывать спиннер.
@@ -358,7 +425,7 @@ data class ParagraphBlock(
 **Механизм точный, без приближений:**
 
 1. При включении TTS берётся текст **текущей страницы** (массив блоков/абзацев).
-2. Весь текст страницы склеивается в одну строку.
+2. Весь текст страницы склеивается в одну строку (из `AnnotatedString.text` — plain text без SpanStyle).
 3. Вызывается `tts.speak(text, QUEUE_FLUSH, null, "page_<N>")`.
 4. Регистрируется `OnUtteranceProgressListener`:
    - `onDone("page_<N>")` → страница завершена → **автоматически перелистнуть** на следующую страницу.
@@ -542,7 +609,7 @@ data class ParagraphBlock(
 
 ### Фаза 2: Читалка (v0.2)
 
-- [ ] FB2/EPUB парсеры из TextLector (Apache 2.0)
+- [ ] BookParser интерфейс + FB2/EPUB парсеры на TextLector (Apache 2.0)
 - [ ] Пагинатор: разбивка текста на страницы (async, char_offset, Density из UI)
 - [ ] UI читалки: зоны тапа (◄ ► ▲ ▼ центр + прогресс-бар)
 - [ ] Пагинация: перелистывание вперёд/назад
@@ -616,7 +683,7 @@ player.playbackState.apply {
 
 | Библиотека | Назначение | Лицензия |
 |-----------|------------|----------|
-| Ktor / OkHttp | HTTP-клиент (Ktor для OPDS, OkHttp для DoH + ExoPlayer) | Apache 2.0 |
+| OkHttp | HTTP-клиент (OPDS, DoH, ExoPlayer) | Apache 2.0 |
 | Ksoup | HTML-парсинг | MIT |
 | Room | SQLite | Apache 2.0 |
 | Koin | DI | Apache 2.0 |
@@ -899,8 +966,7 @@ fun fetchNarrators(bookId: Long, title: String, author: String): List<NarratorIn
 ```kotlin
 // В ViewModel или синглтоне
 object NarratorCache {
-    private val cache = mutableMapOf<Long, List<NarratorInfo>>()  // bookId -> narrators
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val cache = ConcurrentHashMap<Long, List<NarratorInfo>>()  // thread-safe
 
     suspend fun get(bookId: Long, title: String, author: String): List<NarratorInfo> {
         cache[bookId]?.let { return it }
@@ -1019,7 +1085,8 @@ class CatalogUpdateWorker : CoroutineWorker() {
 
 ### 15.2. DNS-over-HTTPS (DoH)
 
-Использовать OkHttp (не Ktor CIO) — в OkHttp есть официальная поддержка `DnsOverHttps`:
+OkHttp имеет официальную поддержку `DnsOverHttps`. Ktor не используется — все HTTP-запросы
+через OkHttp напрямую:
 
 ```kotlin
 val dependencies {
@@ -1042,10 +1109,8 @@ val okHttpClient = OkHttpClient.Builder()
     .dns(dns)
     .build()
 
-// Ktor использует OkHttp engine
-val client = HttpClient(OkHttp) {
-    engine { preconfigured = okHttpClient }
-}
+// (Ktor не используется — OkHttp напрямую)
+// Для OPDS-запросов: okHttpClient.newCall(request).execute().body?.string()
 ```
 
 Зависимость: добавить `okhttp-dnsoverhttps` в build.gradle. Это обходит блокировки DNS на уровне провайдера без настройки VPN/прокси.
