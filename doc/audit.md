@@ -1,7 +1,23 @@
-# Voxli — Phase 1 Implementation Audit
+# Voxli — Implementation Audit
 
-## Files Created
-See `git log --stat` for full list. 35 files total.
+## Phase 1 — Project scaffold (completed)
+
+## Phase 2 — Reader (completed)
+
+| Task | Status | Notes |
+|------|--------|-------|
+| FB2 parser | ✅ | `Fb2Parser` — XmlPullParser, extracts text + bold/italic/headers/images |
+| EPUB parser | ✅ | `EpubParser` — ZIP + XHTML, follows OPF spine order |
+| Paginator | ✅ | `Paginator` — StaticLayout-based, background thread, char_offset |
+| ReaderScreen: 5 tap zones | ✅ | Zones 1-5 + progress bar, TTS overlay, settings mode |
+| ReaderViewModel | ✅ | Paginator lifecycle, progress save/restore, TTS coordination |
+| TtsEngine | ✅ | Android TTS, page-by-page auto-advance via onDone, speed control |
+| Settings cycle (4 steps) | ✅ | BG_COLOR → TEXT_COLOR → FONT_SIZE → FONT_FACE → DONE |
+| Progress saving (char_offset) | ✅ | Auto-save on page change, restore on book load |
+| Koin integration | ✅ | ReaderViewModel registered with viewModel { } |
+
+## Files (all phases)
+See `git log --stat` for full list. 43 files total.
 
 | File | Status |
 |------|--------|

@@ -7,8 +7,10 @@ import com.voxli.knigavuhe.matcher.KnigavuheMatcher
 import com.voxli.network.NetworkModule
 import com.voxli.reader.engine.BookDownloader
 import com.voxli.settings.SettingsRepository
+import com.voxli.ui.reader.ReaderViewModel
 import okhttp3.OkHttpClient
 import org.koin.android.ext.koin.androidContext
+import org.koin.androidx.viewmodel.dsl.viewModel
 import org.koin.core.context.startKoin
 import org.koin.dsl.module
 
@@ -30,6 +32,9 @@ private val appModule = module {
     // Providers
     single { FlibustaProvider(get()) }
     single { KnigavuheMatcher(get()) }
+
+    // ViewModels
+    viewModel { ReaderViewModel(get(), get(), get(), get()) }
 }
 
 fun initKoin(app: Application) {
