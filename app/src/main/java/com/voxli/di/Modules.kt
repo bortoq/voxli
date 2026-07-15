@@ -9,6 +9,7 @@ import com.voxli.knigavuhe.matcher.KnigavuheMatcher
 import com.voxli.network.NetworkModule
 import com.voxli.reader.engine.BookDownloader
 import com.voxli.settings.SettingsRepository
+import com.voxli.ui.library.LibraryViewModel
 import com.voxli.ui.player.PlayerViewModel
 import com.voxli.ui.reader.ReaderViewModel
 import okhttp3.OkHttpClient
@@ -43,6 +44,7 @@ private val appModule = module {
     // ViewModels
     viewModel { ReaderViewModel(get(), get(), get(), get()) }
     viewModel { PlayerViewModel(get(), get(), get(), get()) }
+    viewModel { LibraryViewModel(get(), get(), get(), get()) }
 }
 
 fun initKoin(app: Application) {

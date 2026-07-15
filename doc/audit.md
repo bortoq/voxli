@@ -10,6 +10,30 @@
 | MP3 Downloader (with progress + resume) | ✅ | `AudioDownloader` — Range header resume, per-track progress |
 | Player UI | ✅ | `PlayerScreen` — cover, track list, play/pause, seek, speed, time |
 | PlayerViewModel | ✅ | `PlayerViewModel` — bind to service, position polling, progress save |
+| AudioPlaybackService | ✅ | ExoPlayer + hotlinking headers, playlist, media session |
+| Android 14 MediaSession permissions | ✅ | added in Phase 1, manifest has FOREGROUND_SERVICE_MEDIA_PLAYBACK |
+| LRU MP3 cache cleanup | ✅ | `Mp3CacheCleaner` — WorkManager daily, evict if <1GB free + >30 days |
+| Bluetooth Media Buttons | ✅ | MediaSession handles SKIP_TO_NEXT/PREVIOUS via ExoPlayer |
+
+## Phase 4 — Search + Polish (completed)
+
+| Task | Status | Notes |
+|------|--------|-------|
+| Полнотекстовый поиск (FTS5) | ✅ | `LibraryViewModel.performSearch()` — debounce 300ms, prefix search |
+| Фильтрация по рейтингу | ✅ | Сортировка по `rating DESC`, отображение ★ |
+| Экран истории | ✅ | `HistoryScreen` — список с прогресс-баром, статус |
+| Pull-to-refresh | ✅ | `PullToRefreshBox` с `FlibustaProvider.mirrorSwitch()` |
+| Snackbar для ошибок сети | ✅ | `SnackbarHost` в `Scaffold`, `clearError()` |
+| Анимации переходов | ✅ | `fadeIn/fadeOut` в NavHost + `AnimatedContent` для режимов |
+| Навигация Library → Reader → Player | ✅ | `NavHost` с 5 маршрутами |
+| GenreSelectionScreen интеграция | ✅ | через `onFilterClick` → popBackStack |
+| DI | ✅ | LibraryViewModel зарегистрирован |
+
+| Task | Status | Notes |
+|------|--------|-------|
+| MP3 Downloader (with progress + resume) | ✅ | `AudioDownloader` — Range header resume, per-track progress |
+| Player UI | ✅ | `PlayerScreen` — cover, track list, play/pause, seek, speed, time |
+| PlayerViewModel | ✅ | `PlayerViewModel` — bind to service, position polling, progress save |
 | AudioPlaybackService | ✅ | ExoPlayer + hotlinking headers, playlist, notification, media session |
 | Android 14 MediaSession permissions | ✅ | Added in Phase 1, manifest has FOREGROUND_SERVICE_MEDIA_PLAYBACK |
 | LRU MP3 cache cleanup | ✅ | `Mp3CacheCleaner` — WorkManager daily, evict if <1GB free + >30 days |
