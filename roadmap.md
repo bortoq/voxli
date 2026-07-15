@@ -317,10 +317,21 @@ class Paginator(
 
     // Page = список блоков + charOffsetStart + charOffsetEnd
     data class Page(
-        val blocks: List<Block>,
+        val blocks: List<ParagraphBlock>,
         val charOffsetStart: Int,
         val charOffsetEnd: Int,
     )
+
+/**
+ * Блок с форматированием. charOffset — сквозной индекс символа
+ * по всему тексту книги (для сохранения прогресса).
+ */
+data class ParagraphBlock(
+    val annotatedText: AnnotatedString,  // жирный, курсив, заголовки Compose
+    val globalCharStart: Int,
+    val globalCharEnd: Int,
+    val images: List<BookImage> = emptyList(),
+)
 
     suspend fun getPage(n: Int): Page { ... }
     suspend fun findPageByCharOffset(charOffset: Int): Int { ... }
@@ -541,6 +552,29 @@ class Paginator(
 - [ ] UI плеера: обложка, треки, прогресс
 - [ ] Фоновое воспроизведение (MediaSession)
 
+**⚠️ Android 14 (API 34): обязательные требования для фонового аудио:**
+```xml
+<!-- AndroidManifest.xml -->
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+<service
+    android:name=".service.AudioPlaybackService"
+    android:foregroundServiceType="mediaPlayback"
+    android:exported="true">
+    <intent-filter>
+        <action android:name="androidx.media3.session.MediaSessionService" />
+    </intent-filter>
+</service>
+```
+- Без `POST_NOTIFICATIONS` (Android 13+) ОС запретит запуск Foreground Service.
+- Без `FOREGROUND_SERVICE_MEDIA_PLAYBACK` (Android 14+) сервис упадёт с `ForegroundServiceDidNotStartInTimeException`
+
+**Очистка кэша MP3 (LRU):** аудиокниги весят 200 МБ – 1.5 ГБ. При инициализации плеера
+проверять свободное место. Если < 1 ГБ — удалять MP3-файлы книг, не открывавшихся > 30 дней.
+Механизм: WorkManager раз в сутки, или при старте плеера.
+
 ### Фаза 4: Поиск + полировка (v0.4)
 
 - [ ] Полнотекстовый поиск по библиотеке
@@ -561,9 +595,11 @@ class Paginator(
 
 ## 12. Зависимости
 
+**Единый version catalog**: `gradle/libs.versions.toml`. Все версии библиотек — там.
+
 | Библиотека | Назначение | Лицензия |
 |-----------|------------|----------|
-| Ktor | HTTP-клиент | Apache 2.0 |
+| Ktor / OkHttp | HTTP-клиент (Ktor для OPDS, OkHttp для DoH + ExoPlayer) | Apache 2.0 |
 | Ksoup | HTML-парсинг | MIT |
 | Room | SQLite | Apache 2.0 |
 | Koin | DI | Apache 2.0 |
@@ -860,6 +896,25 @@ object NarratorCache {
 }
 ```
 
+#### ExoPlayer: защита от Hotlinking (Knigavuhe)
+
+Серверы Knigavuhe блокируют стриминг MP3 без правильных заголовков (403 / 406).
+
+```kotlin
+val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+    .setUserAgent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+    .setDefaultRequestProperties(mapOf("Referer" to "https://knigavuhe.org/"))
+
+val player = ExoPlayer.Builder(context)
+    .setMediaSourceFactory(
+        DefaultMediaSourceFactory(context)
+            .setDataSourceFactory(httpDataSourceFactory)
+    )
+    .build()
+```
+
+Без этого плеер получит 403 Forbidden.
+
 ### 14.3. Подготовка shipped DB (топ-5000)
 
 **Скрипт** (отдельный, не часть Android-проекта):
@@ -869,6 +924,18 @@ object NarratorCache {
 - Для каждой — проверка knigavuhe (has_audio)
 - Запись в SQLite, VACUUM, сжатие
 - Результат: `voxli_seed.db` → `app/src/main/assets/databases/`
+
+**⚠️ Критично: схема seed.db должна в точности совпадать со схемой Room.**
+Room при `createFromAsset()` сверяет хэш схемы с `room_master_table`. Если таблица `books_fts`
+создана вручную без учёта shadow-таблиц Room (`books_fts_data`, `books_fts_idx`,
+`books_fts_docsize`, `books_fts_config`), Room выбросит:
+```
+IllegalStateException: Pre-packaged database has an invalid schema.
+```
+**Решение**: Сначала собрать проект и дать Room сгенерировать DDL (файл
+`app/build/generated/ksp/debug/resources/schemas/.../1.json`). Скрипт генерации seed.db
+должен использовать **точно те же** CREATE TABLE / CREATE INDEX / CREATE TRIGGER, что в
+этом JSON. После чего `VACUUM` и копирование в assets.
 
 Room при первом запуске копирует `assets/databases/voxli_seed.db` → `databases/voxli.db`.
 Далее — инкрементальные обновления через OPDS new/since.
