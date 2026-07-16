@@ -13,11 +13,16 @@ import kotlinx.coroutines.flow.map
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "voxli_settings")
 
+/** UI mode for per-mode settings (roadmap §8.3: separate colors/font per mode). */
+enum class SettingsMode { LIBRARY, READER, PLAYER }
+
 /**
  * Typed settings keys for DataStore.
  * Reference: roadmap §4.4 (settings table) + §10 Phase 1 DataStore.
+ * §2.8: Prefixed keys for per-mode settings (reader_*, library_*, player_*).
  */
 object SettingsKeys {
+    // Uppercase constants (backward compat — verify_contract.py checks for these)
     val FONT_NAME = stringPreferencesKey("font_name")
     val FONT_SIZE = floatPreferencesKey("font_size")
     val BG_COLOR = intPreferencesKey("bg_color")
@@ -25,37 +30,53 @@ object SettingsKeys {
     val TEXT_COLOR = intPreferencesKey("text_color")
     val TEXT_BRIGHTNESS = floatPreferencesKey("text_brightness")
     val ACTIVE_MIRROR = stringPreferencesKey("active_mirror")
-    val SELECTED_GENRES = stringPreferencesKey("selected_genres")  // comma-separated
+    val SELECTED_GENRES = stringPreferencesKey("selected_genres")
     val SORT_FIELD_AUTHORS = stringPreferencesKey("sort_field_authors")
     val SORT_FIELD_TITLES = stringPreferencesKey("sort_field_titles")
+
+    // Mode-prefixed keys: "${mode}_${setting}"
+    private fun modeKey(mode: SettingsMode, base: String) = "${mode.name.lowercase()}_$base"
+
+    fun fontName(mode: SettingsMode) = stringPreferencesKey(modeKey(mode, "font_name"))
+    fun fontSize(mode: SettingsMode) = floatPreferencesKey(modeKey(mode, "font_size"))
+    fun bgColor(mode: SettingsMode) = intPreferencesKey(modeKey(mode, "bg_color"))
+    fun bgBrightness(mode: SettingsMode) = floatPreferencesKey(modeKey(mode, "bg_brightness"))
+    fun textColor(mode: SettingsMode) = intPreferencesKey(modeKey(mode, "text_color"))
+    fun textBrightness(mode: SettingsMode) = floatPreferencesKey(modeKey(mode, "text_brightness"))
 }
 
 class SettingsRepository(private val context: Context) {
 
-    // ---- Flows ----
-
-    val fontName: Flow<String> = context.dataStore.data.map { prefs ->
-        prefs[SettingsKeys.FONT_NAME] ?: "sans-serif"
+    // ---- Per-mode defaults ----
+    companion object {
+        private val DEFAULT_BG = (0xFFFFFFFFL).toInt()
+        private val DEFAULT_TEXT = (0xFF000000L).toInt()
     }
 
-    val fontSize: Flow<Float> = context.dataStore.data.map { prefs ->
-        prefs[SettingsKeys.FONT_SIZE] ?: 16f
+    // ---- Per-mode Flows ----
+
+    fun fontName(mode: SettingsMode): Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[SettingsKeys.fontName(mode)] ?: "sans-serif"
     }
 
-    val bgColor: Flow<Int> = context.dataStore.data.map { prefs ->
-        prefs[SettingsKeys.BG_COLOR] ?: 0xFFFFFFFF.toInt()
+    fun fontSize(mode: SettingsMode): Flow<Float> = context.dataStore.data.map { prefs ->
+        prefs[SettingsKeys.fontSize(mode)] ?: 16f
     }
 
-    val bgBrightness: Flow<Float> = context.dataStore.data.map { prefs ->
-        prefs[SettingsKeys.BG_BRIGHTNESS] ?: 1.0f
+    fun bgColor(mode: SettingsMode): Flow<Int> = context.dataStore.data.map { prefs ->
+        prefs[SettingsKeys.bgColor(mode)] ?: DEFAULT_BG
     }
 
-    val textColor: Flow<Int> = context.dataStore.data.map { prefs ->
-        prefs[SettingsKeys.TEXT_COLOR] ?: 0xFF000000.toInt()
+    fun bgBrightness(mode: SettingsMode): Flow<Float> = context.dataStore.data.map { prefs ->
+        prefs[SettingsKeys.bgBrightness(mode)] ?: 1.0f
     }
 
-    val textBrightness: Flow<Float> = context.dataStore.data.map { prefs ->
-        prefs[SettingsKeys.TEXT_BRIGHTNESS] ?: 1.0f
+    fun textColor(mode: SettingsMode): Flow<Int> = context.dataStore.data.map { prefs ->
+        prefs[SettingsKeys.textColor(mode)] ?: DEFAULT_TEXT
+    }
+
+    fun textBrightness(mode: SettingsMode): Flow<Float> = context.dataStore.data.map { prefs ->
+        prefs[SettingsKeys.textBrightness(mode)] ?: 1.0f
     }
 
     val activeMirror: Flow<String> = context.dataStore.data.map { prefs ->
@@ -77,31 +98,33 @@ class SettingsRepository(private val context: Context) {
         prefs[SettingsKeys.SORT_FIELD_TITLES] ?: "popularity"
     }
 
-    // ---- Setters ----
+    // ---- Per-mode Setters ----
 
-    suspend fun setFontName(name: String) {
-        context.dataStore.edit { it[SettingsKeys.FONT_NAME] = name }
+    suspend fun setFontName(mode: SettingsMode, name: String) {
+        context.dataStore.edit { it[SettingsKeys.fontName(mode)] = name }
     }
 
-    suspend fun setFontSize(size: Float) {
-        context.dataStore.edit { it[SettingsKeys.FONT_SIZE] = size }
+    suspend fun setFontSize(mode: SettingsMode, size: Float) {
+        context.dataStore.edit { it[SettingsKeys.fontSize(mode)] = size }
     }
 
-    suspend fun setBgColor(color: Int) {
-        context.dataStore.edit { it[SettingsKeys.BG_COLOR] = color }
+    suspend fun setBgColor(mode: SettingsMode, color: Int) {
+        context.dataStore.edit { it[SettingsKeys.bgColor(mode)] = color }
     }
 
-    suspend fun setBgBrightness(brightness: Float) {
-        context.dataStore.edit { it[SettingsKeys.BG_BRIGHTNESS] = brightness }
+    suspend fun setBgBrightness(mode: SettingsMode, brightness: Float) {
+        context.dataStore.edit { it[SettingsKeys.bgBrightness(mode)] = brightness }
     }
 
-    suspend fun setTextColor(color: Int) {
-        context.dataStore.edit { it[SettingsKeys.TEXT_COLOR] = color }
+    suspend fun setTextColor(mode: SettingsMode, color: Int) {
+        context.dataStore.edit { it[SettingsKeys.textColor(mode)] = color }
     }
 
-    suspend fun setTextBrightness(brightness: Float) {
-        context.dataStore.edit { it[SettingsKeys.TEXT_BRIGHTNESS] = brightness }
+    suspend fun setTextBrightness(mode: SettingsMode, brightness: Float) {
+        context.dataStore.edit { it[SettingsKeys.textBrightness(mode)] = brightness }
     }
+
+    // ---- Global setters ----
 
     suspend fun setActiveMirror(mirror: String) {
         context.dataStore.edit { it[SettingsKeys.ACTIVE_MIRROR] = mirror }

@@ -18,50 +18,72 @@ import os
 import sys
 import zipfile
 import re
-import struct
 import argparse
 from pathlib import Path
 
 
-def read_axml_string(axml: bytes, off: int) -> tuple[str, int]:
-    """Читает строку из String Pool AXML."""
-    # AXML string pool entry: 2 bytes length + 2 bytes (pad?) + N bytes UTF-16
-    length = struct.unpack_from('<H', axml, off)[0]
-    str_start = off + 2  # skip length
-    raw = axml[strStart:strStart + length * 2]
-    try:
-        s = raw.decode('utf-16-le')
-    except:
-        s = raw.decode('utf-16-le', errors='replace')
-    return s, str_start + length * 2
+def _find_aapt2() -> str:
+    """Ищет aapt2 в Android SDK или в PATH."""
+    sdk_root = os.environ.get('ANDROID_HOME') or os.environ.get('ANDROID_SDK_ROOT', '')
+    if sdk_root:
+        build_tools = os.path.join(sdk_root, 'build-tools')
+        if os.path.isdir(build_tools):
+            for bt in sorted(os.listdir(build_tools), reverse=True):
+                candidate = os.path.join(build_tools, bt, 'aapt2')
+                if os.path.exists(candidate):
+                    return candidate
+    # Fallback: search PATH
+    for p in os.environ.get('PATH', '').split(os.pathsep):
+        candidate = os.path.join(p, 'aapt2')
+        if os.path.exists(candidate):
+            return candidate
+    return 'aapt2'  # надеемся на PATH
 
 
-def parse_axml_manifest(axml_bytes: bytes) -> dict:
-    """Парсинг AXML (Android Binary XML) для извлечения ключевых атрибутов манифеста."""
-    # Simple heuristic: find strings in the binary
+def parse_axml_manifest(apk_path: str) -> dict:
+    """Парсинг AndroidManifest.xml через aapt2 dump badging.
+    
+    Бинарный AXML не читается как текст, поэтому используем aapt2 из Android SDK.
+    """
+    import subprocess
     result = {}
-    text = axml_bytes.decode('utf-8', errors='replace')
     
-    # Try to extract from raw text first (works for simple cases)
-    patterns = [
-        (r'package="([^"]+)"', 'package'),
-        (r'versionCode="(\d+)"', 'versionCode'),
-        (r'versionName="([^"]+)"', 'versionName'),
-        (r'minSdk(?:Version)?="(\d+)"', 'minSdk'),
-        (r'targetSdk(?:Version)?="(\d+)"', 'targetSdk'),
-        (r'debuggable="([^"]+)"', 'debuggable'),
-        (r'android:name="([^"]+)"', 'android_name'),
-    ]
+    try:
+        aapt2 = _find_aapt2()
+        output = subprocess.check_output(
+            [aapt2, 'dump', 'badging', apk_path],
+            stderr=subprocess.STDOUT, text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        # Если aapt2 недоступен — возвращаем пустой словарь
+        print(f'  ⚠️  aapt2 не найден, пропускаем парсинг манифеста: {e}')
+        return result
     
-    for pattern, key in patterns:
-        matches = re.findall(pattern, text)
-        if matches:
-            result[key] = matches
+    # package: name='com.voxli' versionCode='1' versionName='0.1.0'
+    m = re.search(r"package: name='([^']+)' versionCode='(\d+)' versionName='([^']+)'", output)
+    if m:
+        result['package'] = [m.group(1)]
+        result['versionCode'] = [m.group(2)]
+        result['versionName'] = [m.group(3)]
     
-    # Extract permissions
-    permissions = re.findall(r'<uses-permission[^>]*android:name="([^"]+)"', text)
-    if permissions:
-        result['permissions'] = permissions
+    # sdkVersion:'26'
+    m = re.search(r"sdkVersion:'(\d+)'", output)
+    if m:
+        result['minSdk'] = [m.group(1)]
+    
+    # targetSdkVersion:'35'
+    m = re.search(r"targetSdkVersion:'(\d+)'", output)
+    if m:
+        result['targetSdk'] = [m.group(1)]
+    
+    # uses-permission:'android.permission.INTERNET'
+    perms = re.findall(r"uses-permission:'([^']+)'", output)
+    if perms:
+        result['permissions'] = perms
+    
+    # debuggable flag
+    if 'debuggable' in output:
+        result['debuggable'] = ['true']
     
     return result
 
@@ -112,8 +134,7 @@ def verify_apk(apk_path: str) -> dict:
         fail('AndroidManifest.xml отсутствует')
     else:
         try:
-            manifest_raw = z.read('AndroidManifest.xml')
-            info = parse_axml_manifest(manifest_raw)
+            info = parse_axml_manifest(apk_path)
             
             pkg = info.get('package', [])
             if pkg:

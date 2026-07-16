@@ -14,7 +14,7 @@ class BookDownloader(
     private val context: Context,
     private val client: OkHttpClient,
 ) {
-    private val cacheDir: File get() = File(context.cacheDir, "books").also { it.mkdirs() }
+    private val cacheDir: File by lazy { File(context.cacheDir, "books").also { it.mkdirs() } }
 
     /**
      * Download a book from flibusta.

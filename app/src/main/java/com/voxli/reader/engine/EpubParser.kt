@@ -3,6 +3,7 @@ package com.voxli.reader.engine
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
 import java.util.zip.ZipEntry
+import java.util.zip.ZipException
 import java.util.zip.ZipFile
 
 /**
@@ -15,48 +16,59 @@ class EpubParser : BookParser {
 
     override suspend fun parse(file: java.io.File): DocumentModel {
         val bookId = file.nameWithoutExtension.toLongOrNull() ?: 0L
+
+        // Validate ZIP magic bytes before opening to avoid ZipException on non-ZIP files
+        if (!isValidZip(file)) {
+            return DocumentModel(bookId, file.nameWithoutExtension, "", emptyList(), 0)
+        }
+
         val paragraphs = mutableListOf<ParagraphBlock>()
         var charOffset = 0
         var title = ""
         var author = ""
 
-        ZipFile(file).use { zip ->
-            // Find OPF file from container.xml
-            val opfPath = findOpfPath(zip)
-            if (opfPath == null) {
-                // Fallback: scan for .opf
-                val opfEntry = zip.entries().asSequence()
-                    .find { it.name.endsWith(".opf") && !it.name.contains("META-INF") }
-                if (opfEntry != null) {
-                    val (t, a, entries) = parseOpf(zip.getInputStream(opfEntry))
-                    title = t
-                    author = a
-                    // Parse each spine entry in order
-                    for (entry in entries) {
-                        val entryFile = zip.getEntry(entry)
-                        if (entryFile != null) {
-                            charOffset = parseXhtml(zip.getInputStream(entryFile), paragraphs, charOffset)
+        try {
+            ZipFile(file).use { zip ->
+                // Find OPF file from container.xml
+                val opfPath = findOpfPath(zip)
+                if (opfPath == null) {
+                    // Fallback: scan for .opf
+                    val opfEntry = zip.entries().asSequence()
+                        .find { it.name.endsWith(".opf") && !it.name.contains("META-INF") }
+                    if (opfEntry != null) {
+                        val (t, a, entries) = parseOpf(zip.getInputStream(opfEntry))
+                        title = t
+                        author = a
+                        // Parse each spine entry in order
+                        for (entry in entries) {
+                            val entryFile = zip.getEntry(entry)
+                            if (entryFile != null) {
+                                charOffset = parseXhtml(zip.getInputStream(entryFile), paragraphs, charOffset)
+                            }
                         }
                     }
+                    return DocumentModel(bookId, file.nameWithoutExtension, "", paragraphs, charOffset)
                 }
-                return DocumentModel(bookId, file.nameWithoutExtension, "", paragraphs, charOffset)
-            }
 
-            val opfEntry = zip.getEntry(opfPath) ?: return DocumentModel(bookId, file.nameWithoutExtension, "", paragraphs, 0)
+                val opfEntry = zip.getEntry(opfPath) ?: return DocumentModel(bookId, file.nameWithoutExtension, "", paragraphs, 0)
 
-            val (t, a, spineEntries) = parseOpf(zip.getInputStream(opfEntry))
-            title = t
-            author = a
+                val (t, a, spineEntries) = parseOpf(zip.getInputStream(opfEntry))
+                title = t
+                author = a
 
-            // Resolve relative paths
-            val opfDir = opfPath.substringBeforeLast("/", "")
-            for (entry in spineEntries) {
-                val resolvedPath = if (opfDir.isNotEmpty()) "$opfDir/$entry" else entry
-                val entryFile = zip.getEntry(resolvedPath)
-                if (entryFile != null) {
-                    charOffset = parseXhtml(zip.getInputStream(entryFile), paragraphs, charOffset)
+                // Resolve relative paths
+                val opfDir = opfPath.substringBeforeLast("/", "")
+                for (entry in spineEntries) {
+                    val resolvedPath = if (opfDir.isNotEmpty()) "$opfDir/$entry" else entry
+                    val entryFile = zip.getEntry(resolvedPath)
+                    if (entryFile != null) {
+                        charOffset = parseXhtml(zip.getInputStream(entryFile), paragraphs, charOffset)
+                    }
                 }
             }
+        } catch (_: ZipException) {
+            // Not a valid ZIP file — return empty document
+            return DocumentModel(bookId, file.nameWithoutExtension, "", emptyList(), 0)
         }
 
         return DocumentModel(
@@ -68,24 +80,40 @@ class EpubParser : BookParser {
         )
     }
 
+    /** Quick check for PK\x03\x04 ZIP magic bytes. */
+    private fun isValidZip(file: java.io.File): Boolean {
+        try {
+            if (file.length() < 4) return false
+            val magic = ByteArray(4)
+            file.inputStream().use { it.read(magic) }
+            return magic[0] == 0x50.toByte() && magic[1] == 0x4B.toByte() &&
+                magic[2] == 0x03.toByte() && magic[3] == 0x04.toByte()
+        } catch (_: Exception) {
+            return false
+        }
+    }
+
     private fun findOpfPath(zip: ZipFile): String? {
         val containerEntry = zip.getEntry("META-INF/container.xml")
             ?: zip.getEntry("meta-inf/container.xml")
             ?: return null
 
-        val factory = XmlPullParserFactory.newInstance()
-        val parser = factory.newPullParser()
-        parser.setInput(containerEntry?.let { zip.getInputStream(it) }, "UTF-8")
+        try {
+            val stream = containerEntry?.let { zip.getInputStream(it) } ?: return null
+            val factory = XmlPullParserFactory.newInstance()
+            val parser = factory.newPullParser()
+            parser.setInput(stream, "UTF-8")
 
-        while (parser.eventType != XmlPullParser.END_DOCUMENT) {
-            if (parser.eventType == XmlPullParser.START_TAG &&
-                parser.name == "rootfile" &&
-                "opf" in (parser.getAttributeValue(null, "media-type") ?: "")
-            ) {
-                return parser.getAttributeValue(null, "full-path")
+            while (parser.eventType != XmlPullParser.END_DOCUMENT) {
+                if (parser.eventType == XmlPullParser.START_TAG &&
+                    parser.name == "rootfile" &&
+                    "opf" in (parser.getAttributeValue(null, "media-type") ?: "")
+                ) {
+                    return parser.getAttributeValue(null, "full-path")
+                }
+                parser.next()
             }
-            parser.next()
-        }
+        } catch (_: Exception) { }
         return null
     }
 
@@ -114,7 +142,7 @@ class EpubParser : BookParser {
                             "title" -> title = parser.nextText().trim()
                             "creator" -> {
                                 val text = parser.nextText().trim()
-                                if (author.isEmpty()) author = text
+                                if (author.isBlank()) author = text
                             }
                             "item" -> {
                                 val id = parser.getAttributeValue(null, "id")

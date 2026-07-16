@@ -5,19 +5,31 @@ import androidx.sqlite.db.SupportSQLiteQuery
 
 /**
  * Sanitizes a user query string for FTS5 MATCH.
- * Each word is wrapped in double quotes and suffixed with * for prefix search.
- * Special characters are handled by quoting.
+ * Produces valid FTS5 prefix syntax: `term*` for clean tokens,
+ * `"term"` (exact) for tokens with special chars or FTS5 operators.
  *
- * Example: "война и мир 1869" → ""война"* "и"* "мир"* "1869"*"
+ * FTS5 prefix `*` is only valid on unquoted terms, so we avoid `"term"*`.
+ *
+ * Example: "война и мир 1869" → "война* и* мир* 1869*"
  */
 fun sanitizeFtsQuery(query: String): String {
+    val ftsOperators = setOf("NOT", "AND", "OR", "NEAR")
     return query.trim()
         .split(Regex("\\s+"))
         .filter { it.isNotBlank() }
         .joinToString(" ") { token ->
             val escaped = token.replace("\"", "\"\"")
-            "\"$escaped\"*"
+            val isOperator = escaped.uppercase() in ftsOperators
+            val hasSpecialChars = escaped.any { it in "*\"()+-:^" }
+            if (isOperator || hasSpecialChars) {
+                // Quoted exact match (prefix * does not work after quoted term)
+                "\"$escaped\""
+            } else {
+                // Unquoted prefix match (valid FTS5 syntax)
+                "${escaped}*"
+            }
         }
+        .ifEmpty { "" }
 }
 
 /**

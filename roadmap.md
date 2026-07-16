@@ -46,21 +46,21 @@ PDF, MOBI, CBR/CBZ — не поддерживаются.
 - Ставится флаг `has_audio = 1`.
 - URL аудио не хранятся — запрос выполняется в момент тапа пользователя (1–2 сек).
 - **Матчинг — нечёткий**: названия и имена авторов различаются на сайтах (инициалы vs полное имя, разные регистры, пунктуация).
-  Алгоритм (по приоритету):
-  1. Нормализация: lower case, удаление пунктуации, `"Толстой Лев Николаевич"` → `"толстой лев"`, `"Толстой Л.Н."` → `"толстой"` (только фамилия).
-  2. Точное совпадение `(normalize(title), normalize(author))` — ~40% успеха.
-  3. Совпадение по фамилии + первому слову названия — ещё ~30%.
-  4. Levenshtein < 30% длины строки — ~20%. Выполняется в WorkManager, не блокирует UI.
-     **Важно**: перед вычислением Левенштейна — фильтрация кандидатов в SQLite:
-     ```sql
-     SELECT id, title, author FROM books
-     WHERE author LIKE :firstLetter '%'        -- первая буква фамилии
-       AND LENGTH(title) BETWEEN :minLen AND :maxLen  -- ±20% от длины исходного названия
-     LIMIT 100;
-     ```
-     Только для полученных 10–100 кандидатов вычисляется расстояние Левенштейна в Kotlin.
-     Полная выборка 300k строк в Kotlin не производится.
-  5. Нет совпадения → `has_audio = 0` (лучше ложноотрицательный, чем ложноположительный).
+ Алгоритм (по приоритету):
+ 1. Нормализация: lower case, удаление пунктуации, `"Толстой Лев Николаевич"` → `"толстой лев"`, `"Толстой Л.Н."` → `"толстой"` (только фамилия).
+ 2. Точное совпадение `(normalize(title), normalize(author))` — ~40% успеха.
+ 3. Совпадение по фамилии + первому слову названия — ещё ~30%.
+ 4. Levenshtein < 30% длины строки — ~20%. Выполняется в WorkManager, не блокирует UI.
+ **Важно**: перед вычислением Левенштейна — фильтрация кандидатов в SQLite:
+ ```sql
+ SELECT id, title, author FROM books
+ WHERE author LIKE :firstLetter '%' -- первая буква фамилии
+ AND LENGTH(title) BETWEEN :minLen AND :maxLen -- ±20% от длины исходного названия
+ LIMIT 100;
+ ```
+ Только для полученных 10–100 кандидатов вычисляется расстояние Левенштейна в Kotlin.
+ Полная выборка 300k строк в Kotlin не производится.
+ 5. Нет совпадения → `has_audio = 0` (лучше ложноотрицательный, чем ложноположительный).
 - Для shipped DB (топ-5000) матчинг выполняется скриптом однократно.
 
 ### 3.3. Локальные файлы
@@ -106,22 +106,22 @@ PDF, MOBI, CBR/CBZ — не поддерживаются.
 ```sql
 -- Виртуальная таблица с внешним контентом
 CREATE VIRTUAL TABLE books_fts USING fts5(
-    title, author, content=books, content_rowid=id,
-    tokenize='unicode61 remove_diacritics 1'
+ title, author, content=books, content_rowid=id,
+ tokenize='unicode61 remove_diacritics 1'
 );
 
 -- Триггеры: для content=books требуется двухэтапное 'delete' + insert
 CREATE TRIGGER books_ai AFTER INSERT ON books BEGIN
-    INSERT INTO books_fts(rowid, title, author) VALUES (new.id, new.title, new.author);
+ INSERT INTO books_fts(rowid, title, author) VALUES (new.id, new.title, new.author);
 END;
 
 CREATE TRIGGER books_ad AFTER DELETE ON books BEGIN
-    INSERT INTO books_fts(books_fts, rowid, title, author) VALUES ('delete', old.id, old.title, old.author);
+ INSERT INTO books_fts(books_fts, rowid, title, author) VALUES ('delete', old.id, old.title, old.author);
 END;
 
 CREATE TRIGGER books_au AFTER UPDATE ON books BEGIN
-    INSERT INTO books_fts(books_fts, rowid, title, author) VALUES ('delete', old.id, old.title, old.author);
-    INSERT INTO books_fts(rowid, title, author) VALUES (new.id, new.title, new.author);
+ INSERT INTO books_fts(books_fts, rowid, title, author) VALUES ('delete', old.id, old.title, old.author);
+ INSERT INTO books_fts(rowid, title, author) VALUES (new.id, new.title, new.author);
 END;
 
 -- Поиск: 5–20 мс на 300k записей
@@ -133,18 +133,18 @@ LIMIT 50;
 ```
 - **Debounce** ввода: 300 мс после последнего символа.
 - **Санитизация запроса** (экранирование спецсимволов FTS5: `: - " * ( )`):
-  ```kotlin
-  fun sanitizeFtsQuery(query: String): String {
-      return query.trim()
-          .split(Regex("\\s+"))
-          .filter { it.isNotBlank() }
-          .joinToString(" ") { "\"${it.replace("\"", "\"\"")}\"*" }
-  }
-  // "война и мир 1869" → ""война"* "и"* "мир"* "1869"*"
-  ```
+ ```kotlin
+ fun sanitizeFtsQuery(query: String): String {
+ return query.trim()
+ .split(Regex("\\s+"))
+ .filter { it.isNotBlank() }
+ .joinToString(" ") { "\"${it.replace("\"", "\"\"")}\"*" }
+ }
+ // "война и мир 1869" → ""война"* "и"* "мир"* "1869"*"
+ ```
 - **Русская морфология**: стемминг не используется (FTS5 не поддерживает русский стеммер).
-  Компенсация: все слова поиска автоматически получают суффикс `*` (префиксный поиск).
-  `"война"` → `"война"*` находит `война`, `войне`, `войны`, `войной`.
+ Компенсация: все слова поиска автоматически получают суффикс `*` (префиксный поиск).
+ `"война"` → `"война"*` находит `война`, `войне`, `войны`, `войной`.
 - `rank = BM25` — встроенная релевантность FTS5.
 
 ### 4.3. Таблица: history
@@ -194,28 +194,28 @@ LIMIT 50;
 
 ```
 ┌─────────────────────────────────────────────┐
-│                 UI (Compose)                 │
-│  LibraryScreen / ReaderScreen / PlayerScreen │
+│ UI (Compose) │
+│ LibraryScreen / ReaderScreen / PlayerScreen │
 └────────────────────┬────────────────────────┘
-                     │
+ │
 ┌────────────────────┴────────────────────────┐
-│              ViewModel / UseCases             │
-│  LibraryViewModel / ReaderViewModel / ...     │
+│ ViewModel / UseCases │
+│ LibraryViewModel / ReaderViewModel / ... │
 └────────────────────┬────────────────────────┘
-                     │
+ │
 ┌────────────────────┴────────────────────────┐
-│              Repository Layer                 │
-│  ┌──────────────┐  ┌───────────────────┐     │
-│  │  BookRepo    │  │  HistoryRepo      │     │
-│  └──────┬───────┘  └───────────────────┘     │
+│ Repository Layer │
+│ ┌──────────────┐ ┌───────────────────┐ │
+│ │ BookRepo │ │ HistoryRepo │ │
+│ └──────┬───────┘ └───────────────────┘ │
 └─────────┼────────────────────────────────────┘
-          │
+ │
 ┌─────────┴────────────────────────────────────┐
-│  Providers + Services                        │
-│  ┌──────────┐ ┌───────────┐ ┌─────────────┐ │
-│  │Flibusta  │ │ Knigavuhe │ │ Room DB     │ │
-│  │(OPDS+HTML)│ │ (on-demand)│ │ (shipped)   │ │
-│  └──────────┘ └───────────┘ └─────────────┘ │
+│ Providers + Services │
+│ ┌──────────┐ ┌───────────┐ ┌─────────────┐ │
+│ │Flibusta │ │ Knigavuhe │ │ Room DB │ │
+│ │(OPDS+HTML)│ │ (on-demand)│ │ (shipped) │ │
+│ └──────────┘ └───────────┘ └─────────────┘ │
 └──────────────────────────────────────────────┘
 ```
 
@@ -226,10 +226,11 @@ LIMIT 50;
 | `catalog.db` | Room: books + history + settings |
 | `flibusta.provider` | OPDS-клиент + HTML-парсер страницы книги |
 | `knigavuhe.matcher` | Поиск аудио по (title, author), извлечение URL |
-| `reader.engine` | FB2/EPUB парсеры (TextLector, Apache 2.0) + пагинатор |
+| `reader.engine` | FB2/EPUB парсеры + **интерфейс** `TextMeasurer` + пагинатор |
+| `reader.android` | Android-реализация `TextMeasurer` (StaticLayout/TextPaint) |
 | `audio.engine` | Загрузчик MP3 + Media3 плеер |
 | `tts.engine` | Android TTS API |
-| `ui.library` | Экран библиотеки (авторы/названия/поиск/настройки) |
+| `ui.library` | Экран библиотеки (поиск/список/прогресс-бар) |
 | `ui.reader` | Экран чтения (пагинация, TTS, прогресс) |
 | `ui.player` | Экран аудиоплеера |
 
@@ -245,20 +246,20 @@ LIMIT 50;
 
 ```
 ┌───────────────────────────────────────────────┐
-│  ═══════════ ЗОНА 1: ВЕРХ ═════════════════  │ ← 10% высоты, вся ширина
-│  (тап = библиотека)                            │
+│ ═══════════ ЗОНА 1: ВЕРХ ═════════════════ │ ← 10% высоты, вся ширина
+│ (тап = библиотека) │
 ├──────────┬──────────────────┬──────────────────┤
-│  ЗОНА 2  │    ЗОНА 3        │    ЗОНА 4        │ ← 70% высоты
-│  ◄ ЛЕВО  │    ЦЕНТР         │    ПРАВО ►        │
-│  (30%)   │    (40%)         │    (30%)          │
-│          │                  │                   │
-│          │                  │                   │
+│ ЗОНА 2 │ ЗОНА 3 │ ЗОНА 4 │ ← 70% высоты
+│ ЛЕВО │ ЦЕНТР │ ПРАВО │
+│ (30%) │ (40%) │ (30%) │
+│ │ │ │
+│ │ │ │
 ├──────────┴──────────────────┴──────────────────┤
-│  ═══════════ ЗОНА 5: НИЗ ═══════════════════  │ ← 10% высоты, вся ширина
-│  (зарезервировано / в TTS: громкость −)        │
+│ ═══════════ ЗОНА 5: НИЗ ═══════════════════ │ ← 10% высоты, вся ширина
+│ (зарезервировано / в TTS: громкость −) │
 ├───────────────────────────────────────────────┤
-│  ═══════════ ПРОГРЕСС-БАР ═══════════════════ │ ← фиксированная высота
-│  (тап = цикл настроек)                         │  (8 dp / 24 dp)
+│ ═══════════ ПРОГРЕСС-БАР ═══════════════════ │ ← фиксированная высота
+│ (тап = цикл настроек) │ (8 dp / 24 dp)
 └───────────────────────────────────────────────┘
 ```
 
@@ -271,9 +272,9 @@ LIMIT 50;
 | Зона | Размер | Тап | Результат |
 |------|--------|-----|-----------|
 | **Зона 1: Верх** | 10% высоты, вся ширина | → | **← Библиотека** |
-| **Зона 2: ◄ Лево** | 30% ширины, 70% высоты | → | **← Предыдущая страница** |
-| **Зона 3: Центр** | 40% ширины, 70% высоты | → | **TTS: вкл** |
-| **Зона 4: ► Право** | 30% ширины, 70% высоты | → | **→ Следующая страница** |
+| **Зона 2: Лево** | 30% ширины, 70% высоты | → | **← Предыдущая страница** |
+| **Зона 3: Центр** | 40% ширины, 70% высоты | → | **Reader/Player** |
+| **Зона 4: Право** | 30% ширины, 70% высоты | → | **→ Следующая страница** |
 | **Зона 5: Низ** | 10% высоты, вся ширина | → | **(зарезервировано)** |
 | **Прогресс-бар** | фикс. высота, вся ширина | → | Цикл настроек |
 
@@ -284,9 +285,9 @@ LIMIT 50;
 | Зона | Размер | Тап | Результат |
 |------|--------|-----|-----------|
 | **Зона 1: Верх** | 10% высоты, вся ширина | → | **← Библиотека** |
-| **Зона 2: ◄ Лево** | 30% ширины, 70% высоты | → | **TTS скорость −** (0.75× → 0.5×) |
-| **Зона 3: Центр** | 40% ширины, 70% высоты | → | **TTS: выкл** (возврат к чтению) |
-| **Зона 4: ► Право** | 30% ширины, 70% высоты | → | **TTS скорость +** (1.0× → 1.25×) |
+| **Зона 2: Лево** | 30% ширины, 70% высоты | → | **TTS скорость −** (0.75× → 0.5×) |
+| **Зона 3: Центр** | 40% ширины, 70% высоты | → | **Reader/Player** |
+| **Зона 4: Право** | 30% ширины, 70% высоты | → | **TTS скорость +** (1.0× → 1.25×) |
 | **Зона 5: Низ** | 10% высоты, вся ширина | → | **Громкость −** |
 | **Прогресс-бар** | фикс. высота, вся ширина | → | Цикл настроек |
 
@@ -295,85 +296,150 @@ LIMIT 50;
 | Зона | Будет использована для |
 |------|----------------------|
 | **Зона 5 (Низ)** в режиме ЧТЕНИЕ | Оглавление / навигация по главам (свайп вверх = следующая глава) |
-| **Зона 2 (◄ Лево)** в режиме TTS | Перемотка назад по главам (при добавлении TOC) |
-| **Зона 4 (► Право)** в режиме TTS | Перемотка вперёд по главам |
+| **Зона 2 ( Лево)** в режиме TTS | Перемотка назад по главам (при добавлении TOC) |
+| **Зона 4 ( Право)** в режиме TTS | Перемотка вперёд по главам |
 | Двойной тап по центру | Закладки (post-MVP) |
 
 Сейчас все зарезервированные зоны **не имеют эффекта**. При добавлении новых фич они активируются без изменения существующих жестов.
 
 ### 7.5. Пагинатор — разбивка текста на страницы
 
-**⚠️ Измерение текста:** Используется `StaticLayout` (Android SDK) — thread-safe,
-работает на `Dispatchers.Default`. Compose-стили конвертируются в `TextPaint` один раз
-при создании пагинатора. Inline-форматирование (жирный/курсив) при измерении игнорируется
-для скорости; `AnnotatedString` отдаётся в UI как есть, Compose сам применит SpanStyle.
+**⚠️ Архитектура: разделение на интерфейс и Android-реализацию**
 
-**Контракт между парсерами и пагинатором:**
+Пагинатор не должен зависеть от Android SDK. Измерение текста вынесено за интерфейс `TextMeasurer`.
+
+#### Контракт
 
 ```kotlin
-// reader-engine — интерфейс
-interface BookParser {
-    suspend fun parse(file: File): DocumentModel
+// reader.engine — чистый Kotlin, без Android
+interface TextMeasurer {
+ fun measureParagraphs(
+ paragraphs: List<ParagraphBlock>,
+ pageWidthPx: Int,
+ ): List<MeasuredParagraph>
 }
 
-data class DocumentModel(
-    val bookId: Long,
-    val title: String,
-    val author: String,
-    val paragraphs: List<ParagraphBlock>,
-    val totalChars: Int,
+data class MeasuredParagraph(
+ val block: ParagraphBlock,
+ val lines: List<MeasuredLine>,
 )
 
-data class ParagraphBlock(
-    val annotatedText: AnnotatedString,
-    val globalCharStart: Int,
-    val globalCharEnd: Int,
-    val images: List<BookImage> = emptyList(),
-)
-
-data class BookImage(
-    val bytes: ByteArray? = null,   // загруженные данные (v1 — только если есть)
-    val url: String? = null,        // отложенная загрузка (post-MVP)
-    val altText: String = "",
+data class MeasuredLine(
+ val text: String,
+ val charStartInBlock: Int,
+ val charEndInBlock: Int,
 )
 ```
 
 ```kotlin
-// Пагинатор работает на Dispatchers.Default, не блокирует UI
+// reader.android — единственное место с StaticLayout/TextPaint
+class AndroidTextMeasurer(
+ private val textPaint: TextPaint,
+) : TextMeasurer {
+ override fun measureParagraphs(
+ paragraphs: List<ParagraphBlock>,
+ pageWidthPx: Int,
+ ): List<MeasuredParagraph> {
+ paragraphs.map { block ->
+ val layout = StaticLayout.Builder.obtain(
+ block.text, 0, block.text.length,
+ textPaint, pageWidthPx
+ )
+ .setLineSpacing(0f, 1.0f)
+ .setBreakStrategy(Layout.BREAK_STRATEGY_SIMPLE)
+ .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
+ .build()
+ val lines = (0 until layout.lineCount).map { i ->
+ MeasuredLine(
+ text = block.text.substring(layout.getLineStart(i), layout.getLineEnd(i)),
+ charStartInBlock = layout.getLineStart(i),
+ charEndInBlock = layout.getLineEnd(i),
+ )
+ }
+ MeasuredParagraph(block, lines)
+ }
+ }
+}
+```
+
+```kotlin
+// Пагинатор — чистый Kotlin, работает на Dispatchers.Default
 class Paginator(
-    private val document: DocumentModel,
-    private val pageWidthPx: Float,   // в пикселях, переведено из Compose заранее
-    private val pageHeightPx: Float,
-    private val textPaint: TextPaint, // сконвертирован из TextStyle+Density на UI-треде
+ private val document: DocumentModel,
+ private val pageWidthPx: Int,
+ private val pageHeightPx: Int,
+ private val textMeasurer: TextMeasurer, // ← вместо TextPaint
 ) {
-    private val pageCache = mutableMapOf<Int, Page>()
-    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+ private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+ private val pageCache = mutableMapOf<Int, Page>()
 
-    data class Page(
-        val blocks: List<ParagraphBlock>,
-        val charOffsetStart: Int,
-        val charOffsetEnd: Int,
-    )
+ private val _pageCount = MutableStateFlow(0)
+ val pageCount: StateFlow<Int> = _pageCount.asStateFlow()
 
-    suspend fun getPage(n: Int): Page { ... }
-    suspend fun findPageByCharOffset(charOffset: Int): Int { ... }
+ private val _currentPageIndex = MutableStateFlow(0)
+ val currentPageIndex: StateFlow<Int> = _currentPageIndex.asStateFlow()
 
-    private fun measureParagraph(block: ParagraphBlock): StaticLayout {
-        val text = block.annotatedText.text
-        return StaticLayout.Builder.obtain(text, 0, text.length, textPaint, pageWidthPx.toInt())
-            .setLineSpacing(0f, 1.0f)
-            .setBreakStrategy(android.text.Layout.BreakStrategy.SIMPLE)
-            .build()
-    }
+ private val _pagesReady = MutableStateFlow(false)
+ val pagesReady: StateFlow<Boolean> = _pagesReady.asStateFlow()
+
+ // Измерение через интерфейс, не через StaticLayout напрямую
+ private val paragraphLayouts: List<MeasuredParagraph> by lazy {
+ textMeasurer.measureParagraphs(document.paragraphs, pageWidthPx)
+ }
+
+ fun calculatePages() { /* без изменений — итерирует paragraphLayouts */ }
+ fun getPage(index: Int): Page? = pageCache[index]
+ fun findPageByCharOffset(charOffset: Int): Int { /* без изменений */ }
+ fun goToPage(index: Int) { /* без изменений */ }
+ fun nextPage() { /* без изменений */ }
+ fun prevPage() { /* без изменений */ }
+ fun cancel() { scope.cancel() }
+
+ fun rebuild(newWidthPx: Int, newHeightPx: Int, newTextMeasurer: TextMeasurer): Paginator {
+ cancel()
+ return Paginator(document, newWidthPx, newHeightPx, newTextMeasurer)
+ }
 }
 ```
+
+**Тестирование:**
+
+```kotlin
+// 15 тестов Paginator — без Robolectric, только JUnit 4
+// FakeTextMeasurer возвращает предсказуемые данные
+
+class FakeTextMeasurer : TextMeasurer {
+ var wordsPerLine = 10
+
+ override fun measureParagraphs(
+ paragraphs: List<ParagraphBlock>,
+ pageWidthPx: Int,
+ ): List<MeasuredParagraph> {
+ paragraphs.map { block ->
+ val words = block.text.split(" ")
+ val lineGroups = words.chunked(wordsPerLine)
+ val lines = lineGroups.mapIndexed { idx, group ->
+ val lineText = group.joinToString(" ")
+ val prevChars = lineGroups.take(idx).sumOf { it.joinToString(" ").length + 1 }
+ MeasuredLine(
+ text = lineText,
+ charStartInBlock = if (prevChars == 0) 0 else prevChars,
+ charEndInBlock = if (prevChars == 0) lineText.length else prevChars + lineText.length,
+ )
+ }
+ MeasuredParagraph(block, lines)
+ }
+ }
+}
+```
+
+> **Важно**: Robolectric остаётся только для тестирования `AndroidTextMeasurer` (один маленький тест).
+> Если проблема с Robolectric не будет решена и после этого — заменяем пагинацию на Readium Kotlin Toolkit (см. §16).
 
 **⚠️ Lifecycle пагинатора:** Внутри пагинатора собственный `CoroutineScope(Dispatchers.Default + SupervisorJob())`. 
 При уничтожении ViewModel читалки **обязательно вызывать `paginator.cancel()`**, иначе фоновые
 задачи предрасчёта страниц продолжат висеть после выхода из книги — утечка корутин + лишняя
 нагрузка на CPU.
-
-**Изображения в тексте:** для v1 — placeholder (серый прямоугольник). Загрузка — отложена до post-MVP. Блок с `images.isNotEmpty()` занимает фиксированную высоту (100dp) и рендерится как `Box(Modifier.background(Color.Gray).height(100.dp))` при отсутствии `bytes`.
 
 **Стратегия:**
 - При открытии книги: рассчитать первые 20 страниц на фоне (~50 мс). Показывать спиннер.
@@ -381,7 +447,7 @@ class Paginator(
 - При изменении шрифта/размера: очистить кэш, пересчитать заново.
 - **Сохраняется `char_offset`**, не номер страницы (см. §4.3).
 - При повторном открытии: `paginator.findPageByCharOffset(savedCharOffset)`.
-- `Density` и `TextStyle` передаются из UI-контекста в конструктор пагинатора при создании (через ViewModel / Factory).
+- `Density` и `TextStyle` передаются из UI-контекста в `AndroidTextMeasurer` при создании (через ViewModel / Factory).
 
 ### 7.6. TTS — авто-листание страниц
 
@@ -393,9 +459,9 @@ class Paginator(
 2. Весь текст страницы склеивается в одну строку (из `AnnotatedString.text` — plain text без SpanStyle).
 3. Вызывается `tts.speak(text, QUEUE_FLUSH, null, "page_<N>")`.
 4. Регистрируется `OnUtteranceProgressListener`:
-   - `onDone("page_<N>")` → страница завершена → **автоматически перелистнуть** на следующую страницу.
-   - Если это была последняя страница — TTS выключается.
-5. При ручном перелистывании (тап ◄/►) → `tts.stop()` + запуск с новой страницы.
+ - `onDone("page_<N>")` → страница завершена → **автоматически перелистнуть** на следующую страницу.
+ - Если это была последняя страница — TTS выключается.
+5. При ручном перелистывании (тап /) → `tts.stop()` + запуск с новой страницы.
 6. При выключении TTS → `tts.stop()`.
 
 **Плюсы**: точность 100%, не нужно вычислять длительность, не нужно синхронизировать.
@@ -406,143 +472,69 @@ class Paginator(
 
 Для привязки к тексту (v2) потребуется forced alignment, что отложено до post-MVP.
 
-### 7.7. Прогресс-бар (нижняя панель)
+### 7.7. Прогресс-бар читалки
 
-**В режиме чтения:**
-- Тонкая полоса (8 dp)
-- `████░░░ 45%`
-- Тап → вход в цикл настроек
+Узкий вид (8 dp):
+- [≡≡] 45% — прогресс чтения
+- Тап -> утолщение до 24 dp, вход в цикл настроек
 
-**В режиме настроек:**
-- Полоса утолщается (24 dp)
-- Слева `[≡≡]` (3 чёрточки — индикатор настроек)
+Широкий вид (24 dp):
+- Слева [≡≡] — индикатор, ориентир для тапа
 - Подпись: что настраивается
-- Тап → следующий шаг цикла
-- **Зоны тапа читалки временно меняют назначение**: они управляют активной настройкой вместо навигации (см. таблицу ниже). Как только пользователь выходит из настроек (шаг 4), зоны возвращаются к обычным функциям (§7.2–7.3).
+- Зоны тапа временно управляют настройкой вместо навигации
 
-**Цикл настроек читалки** (свой, не библиотечный):
+Цикл настроек (единый для всех режимов):
 
-| Шаг | Надпись | Зона ◄ | Зона ► | Зона ▲ | Зона ▼ |
-|-----|---------|--------|--------|--------|--------|
-| **1. Цвет фона** | `Фон: ◄►цвет  ▲▼ярк` | пред. цвет | след. цвет | яркость + | яркость − |
-| **2. Цвет текста** | `Текст: ◄►цвет  ▲▼ярк` | пред. цвет | след. цвет | яркость + | яркость − |
-| **3. Шрифт + размер** | `Шрифт: ◄►гарн  ▲▼разм` | пред. шрифт | след. шрифт | размер + | размер − |
-| **4. ➤ Чтение** | `чтение` | — | — | — | — |
+| Шаг | Надпись | < | > | ^ | v |
+|-----|---------|---|---|---|---|
+| 1. Фон | [≡≡] Фон: цвет ярк | пред. цвет | след. цвет | ярк + | ярк - |
+| 2. Текст | [≡≡] Текст: цв ярк | пред. цвет | след. цвет | ярк + | ярк - |
+| 3. Шрифт | [≡≡] Шрифт: гарн разм | пред. шрифт | след. шрифт | разм + | разм - |
 
-- Шаг 4 = выход из настроек, возврат к тонкому прогресс-бару. Зоны тапа восстанавливают функции из §7.2.
-- Зона Центр и Прогресс-бар сохраняют свои функции (TTS toggle и цикл) в любом режиме.
+После шага 3 следующий тап возвращает узкий бар.
+Цикл: узкий бар -> тап -> шаг 1 -> шаг 2 -> шаг 3 -> узкий бар -> ...
+
+Зона Центр и Прогресс-бар сохраняют свои функции (Reader/Player toggle и цикл) в любом режиме.
+
+### 7.8. Прогресс-бар плеера
+
+Поведение идентично читалке (§7.7). Отличие — узкий вид показывает [≡≡] 12:34 / 3:45:00 (позиция / длительность аудио).
+Цикл настроек тот же: Фон -> Текст -> Шрифт.
+
 ## 8. Библиотека — контракт
 
-### 8.1. Макет экрана
+### 8.1. Верхняя панель
 
-```
-┌───────────────────────────────────────────────┐
-│  🔍 _____________________   [Авторы ▼]        │ ← верхняя панель
-│  (клавиатура всегда открыта)  тап = цикл      │
-├───────────────────────────────────────────────┤
-│                                               │
-│          КОНТЕНТ (зависит от режима)           │
-│                                               │
-│  Авторы → список авторов (скролл)            │
-│  Названия → произведения (скролл, групп.      │
-│              по сериям)                       │
-│                                               │
-├───────────────────────────────────────────────┤
-│  ═══ [≡≡] Авторы: по популярности ════════  │ ← нижняя панель
-│  тап = след. режим                            │
-└───────────────────────────────────────────────┘
-```
+Поле поиска на всю ширину. Справа число выбранных жанров (тап = режим Genres).
 
-### 8.2. Верхняя панель
+- Плейсхолдер: "Поиск..."
+- FTS5 поиск по title + author одновременно, debounce 300 мс
+- При скролле списка клавиатура скрывается
 
-Две зоны:
+### 8.2. Список книг
 
-| Зона | Действие | Результат |
-|------|----------|-----------|
-| 🔍 Поле поиска | Ввод текста | Фильтрация списка в реальном времени |
-| **[Авторы ▼]** | Тап | Цикл: **Авторы → Названия → Авторы → …** |
+Единый список, группировка по сериям. Сортировка из прогресс-бара.
 
-- **Клавиатура**: автоматически открывается при входе в библиотеку (фокус на поиске). Пользователь может закрыть клавиатуру системной кнопкой «назад» или свайпом вниз. При начале скролла списка — клавиатура автоматически скрывается (фокус снимается).
-- **imePadding() на нижней панели**: панель библиотеки всегда видна над клавиатурой. Список скроллируется под клавиатурой (не через imePadding, а через systemBars).
-- Плейсхолдер поиска: `"Поиск авторов…"` / `"Поиск по названию…"`.
-- Фильтрация: FTS5 (MATCH) + debounce 300 мс. Первые 3 символа — `'запрос*'` (prefix search в FTS5).
+Тап по книге -> раскрытие карточки с аннотацией, чтецами (всегда есть TTS-чтец) и кнопкой [Читать].
+Тап по чтецу -> Player. Тап по [Читать] -> Reader.
+Свайп книги влево -> удалить из кэша.
 
-### 8.3. Режимы контента
+### 8.3. Прогресс-бар библиотеки
 
-#### Режим «Авторы»
+Узкий вид (8 dp): [≡≡] 245 / 1000 — scroll-позиция в списке.
+Тап -> утолщение до 24 dp, вход в цикл настроек.
 
-```
-  Достоевский Фёдор Михайлович
-    Преступление и наказание, Идиот
+Цикл настроек:
 
-  Толстой Лев Николаевич
-    Война и мир, Анна Каренина  🎧
+| Шаг | Надпись | < | > | ^ | v |
+|-----|---------|---|---|---|---|
+| 1. Сортировка | [≡≡] Сорт: по рейтингу | пред. вариант | след. вариант | - | - |
+| 2. Фон | [≡≡] Фон: цвет ярк | пред. цвет | след. цвет | ярк + | ярк - |
+| 3. Текст | [≡≡] Текст: цв ярк | пред. цвет | след. цвет | ярк + | ярк - |
+| 4. Шрифт | [≡≡] Шрифт: гарн разм | пред. шрифт | след. шрифт | разм + | разм - |
 
-  Пушкин Александр Сергеевич
-    Евгений Онегин, Капитанская дочка
-
-  Булгаков Михаил Афанасьевич   🎧
-    Мастер и Маргарита, Собачье сердце
-```
-
-- Имя автора.
-- Под именем — 2 самые рейтинговые книги.
-- 🎧 если у автора есть аудиокниги на knigavuhe.
-- Тап по автору → **режим «Названия», отфильтрованный по этому автору**.
-
-#### Режим «Названия»
-
-```
-  📚 ХРОНИКИ ДРЕЗДЕНА
-  ├─ 1. Гроза из преисподней       🎧 ★★★★
-  ├─ 2. Луна светит безумным            ★★★
-  ├─ 3. Могила в подарок           🎧 ★★★
-  ├─ 4. Летний рыцарь              🎧 ★★★
-  └─ 5. Маска смерти                   ★★★
-
-  📚 ПЕСНЬ ЛЬДА И ПЛАМЕНИ
-  ├─ 1. Игра престолов             🎧 ★★★★★
-  ├─ 2. Битва королев                  ★★★★
-  └─ 3. Буря мечей                 🎧 ★★★★
-
-  1984                              🎧 ★★★★
-  Война и мир                       🎧 ★★★★
-  Преступление и наказание               ★★★★
-```
-
-- **Серии**: заголовок + книги с `series_num`. Группировка всегда, независимо от сортировки.
-- **Без серии**: просто строки, без заголовка «Без серии», без иконки 📚.
-- Тап → **установка книги текущей**:
-  1. Скачать FB2/EPUB в кэш (из flibusta)
-  2. Если `has_audio` → запрос knigavuhe (1–2 сек) → начать загрузку MP3
-  3. Открыть читалку (текст) или плеер (если только аудио)
-- **Свайп книги влево**: удалить из кэша.
-
-### 8.4. Нижняя панель (прогресс-бар библиотеки)
-
-Работает аналогично читалке. Полный цикл режимов (тап по панели = следующий шаг):
-
-| Шаг | Надпись | Зона ◄ | Зона ► | Зона ▲ | Зона ▼ |
-|-----|---------|--------|--------|--------|--------|
-| **1. Сортировка авторов** | `Авторы: по популярности` | пред. поле | след. поле | — | — |
-| **2. Сортировка названий** | `Назв: по популярности` | пред. поле | след. поле | — | — |
-| **3. Фильтр жанров** | `Жанры: выбрано 2` | (через чекбоксы — см. ниже) | | |
-| **4. Цвет фона** | `Фон: ◄►цвет  ▲▼ярк` | пред. цвет | след. цвет | яркость + | яркость − |
-| **5. Цвет текста** | `Текст: ◄►цвет  ▲▼ярк` | пред. цвет | след. цвет | яркость + | яркость − |
-| **6. Шрифт + размер** | `Шрифт: ◄►гарн  ▲▼разм` | пред. шрифт | след. шрифт | размер + | размер − |
-
-**Важно**: в режиме просмотра библиотеки (список авторов или названий) **тапы не работают** — работает только скролл пальцем. Зоны тапа (◄►▲▼) активируются **только когда пользователь вошёл в режим настройки** (тап по прогресс-бару). В режиме настройки зоны работают идентично читалке (§7.1): 5 зон + прогресс-бар.
-
-**Шаг 3 — фильтр жанров**:
-- Вместо списка книг — показываются чекбоксы всех 22 жанров flibusta (табличка §14.1).
-- Пользователь отмечает нужные жанры (тап по строке = переключение чекбокса).
-- Выбранные жанры фиксируются в фильтре.
-- При переключении на Авторы/Названия — список фильтруется по выбранным жанрам.
-- Если фильтр пуст (ничего не выбрано) — показывается всё.
-
-Нижняя панель **не перекрывается клавиатурой** (через `imePadding()` в Compose).
-
----
+После шага 4 следующий тап возвращает узкий бар.
+Варианты сортировки: по рейтингу, по популярности, по названию, по автору.
 
 ## 9. Стратегия обновления каталога
 
@@ -561,22 +553,24 @@ class Paginator(
 ### Фаза 1: База + библиотека (v0.1)
 
 - [ ] Создание Android-проекта (Gradle, модули, Koin DI)
-- [ ] SQLite-схема: books + history + settings. Подготовка shipped DB (топ-5000)
-- [ ] FlibustaProvider: OPDS-обход, парсинг HTML страницы книги
-- [ ] KnigavuheMatcher: поиск аудио по (title, author), извлечение URL
+- [ ] SQLite-схема: books + history + settings. Подготовка shipped DB
+- [ ] FlibustaProvider: OPDS-обход
+- [ ] KnigavuheMatcher: поиск аудио по (title, author)
 - [ ] Загрузчик книг: скачивание FB2/EPUB в кэш
-- [ ] UI библиотеки: верхняя панель (поиск + цикл авторы/названия)
-- [ ] UI: список авторов (скролл, поиск, сортировка)
-- [ ] UI: список названий (группировка по сериям, 🎧, ★)
-- [ ] UI: нижняя панель (цикл: сортировка, жанры, цвета, шрифт)
-- [ ] UI: экран жанров (чекбоксы 22 жанров flibusta)
-- [ ] DataStore: сохранение настроек (шрифт, размер, цвета)
+- [ ] UI библиотеки: поиск + список книг (группировка по сериям)
+- [ ] UI: нижняя панель (цикл: сортировка, фон, текст, шрифт)
+- [ ] UI: экран жанров (чекбоксы)
+- [ ] Progress-бар для всех режимов (Library/Reader/Player/Genres)
+- [ ] DataStore: сохранение настроек per-mode
 
 ### Фаза 2: Читалка (v0.2)
 
 - [ ] BookParser интерфейс + FB2/EPUB парсеры на TextLector (Apache 2.0)
-- [ ] Пагинатор: разбивка текста на страницы (async, char_offset, Density из UI)
-- [ ] UI читалки: зоны тапа (◄ ► ▲ ▼ центр + прогресс-бар)
+- [ ] **TextMeasurer интерфейс** + `AndroidTextMeasurer` — выделение измерения текста
+- [ ] **Paginator** — переписать на `TextMeasurer`, убрать зависимость от Android SDK
+- [ ] **PaginatorTest** — 15 тестов через `FakeTextMeasurer` (без Robolectric)
+- [ ] **AndroidTextMeasurerTest** — 1 тест с Robolectric (измерение одной строки)
+- [ ] UI читалки: зоны тапа ( центр + прогресс-бар)
 - [ ] Пагинация: перелистывание вперёд/назад
 - [ ] TTS: Android TextToSpeech API, play/pause, автоматическое перелистывание
 - [ ] Сохранение прогресса: (book_id, char_offset) → history
@@ -597,12 +591,12 @@ class Paginator(
 <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
 <service
-    android:name=".service.AudioPlaybackService"
-    android:foregroundServiceType="mediaPlayback"
-    android:exported="true">
-    <intent-filter>
-        <action android:name="androidx.media3.session.MediaSessionService" />
-    </intent-filter>
+ android:name=".service.AudioPlaybackService"
+ android:foregroundServiceType="mediaPlayback"
+ android:exported="true">
+ <intent-filter>
+ <action android:name="androidx.media3.session.MediaSessionService" />
+ </intent-filter>
 </service>
 ```
 - Без `POST_NOTIFICATIONS` (Android 13+) ОС запретит запуск Foreground Service.
@@ -618,8 +612,8 @@ class Paginator(
 и что в `PlaybackState` выставлены `state actions`:
 ```kotlin
 player.playbackState.apply {
-    stateActions += PlaybackStateCompat.ACTION_SKIP_TO_NEXT
-    stateActions += PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
+ stateActions += PlaybackStateCompat.ACTION_SKIP_TO_NEXT
+ stateActions += PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
 }
 ```
 Без этого двойное нажатие будет игнорироваться ОС.
@@ -634,14 +628,10 @@ player.playbackState.apply {
 
 ## 11. Post-MVP
 
-- [ ] Оглавление / навигация по главам
-- [ ] Закладки
-- [ ] Android Auto
-- [ ] Экспорт/импорт истории
-- [ ] AI-озвучка (Piper / Kokoro) — если RHVoice не устраивает по качеству
-
----
-
+- Положение прогресс-бара (верх/низ/лево/право)
+- Специфичные для режимов настройки
+- Дополнительные варианты сортировки
+- Межстрочное расстояние, начертание, кернинг
 ## 12. Зависимости
 
 **Единый version catalog**: `gradle/libs.versions.toml`. Все версии библиотек — там.
@@ -659,51 +649,19 @@ player.playbackState.apply {
 | WorkManager | фоновые задачи | Apache 2.0 |
 | TextLector parsers | FB2/EPUB (Apache 2.0) | Apache 2.0 |
 | AndroidX Compose | UI | Apache 2.0 |
+| **Readium Kotlin Toolkit** | **пагинация (fallback)** | **BSD-3** |
 
 ---
 
 ## 13. Поведение при тапе по книге в библиотеке
 
-### has_audio = 0 (только текст)
+Тап по книге = раскрытие карточки с аннотацией, списком чтецов (всегда включает TTS-голос) и кнопкой [Читать].
+Тап по чтецу -> Player. Тап по [Читать] -> Reader.
+Свайп влево -> удалить из кэша.
 
-| Действие | Результат |
-|----------|-----------|
-| Тап по строке книги | Скачать FB2/EPUB в кэш → открыть читалку |
+TTS-чтец присутствует всегда. Тап по центру экрана зона 3 в Reader/Player переключает между ними.
 
-### has_audio = 1 (есть озвучка)
-
-| Действие | Результат |
-|----------|-----------|
-| **Тап по строке книги** | **Раскрыть запись** (анимация): показать список чтецов + кнопку `[📖 Читать]` |
-| Тап по **имени чтеца** | Загрузить MP3 (knigavuhe on-demand) → сразу открыть плеер |
-| Тап по **[📖 Читать]** | Скачать FB2/EPUB в кэш → открыть читалку |
-| Тап по **заголовку книги** (в раскрытом виде) | Скачать FB2/EPUB в кэш → открыть читалку |
-| Тап по **свернутой книге** (повторно, если уже раскрыта) | Свернуть обратно |
-
-### Раскрытая запись (пример)
-
-```
-  Преступление и наказание          🎧 ★★★★
-  Ф. Достоевский
-        ▼
-  ┌─────────────────────────────────────────┐
-  │  🎧 Чтецы:                              │
-  │  ○ Иван Петров                 14ч 23м  │ → тап = плеер
-  │  ○ Елена Соколова             15ч 01м   │
-  │  ○ Алексей Козлов             13ч 55м   │
-  │                                         │
-  │  [📖 Читать]                            │ → тап = читалка
-  └─────────────────────────────────────────┘
-```
-
-### Кэширование чтецов
-
-- При первом раскрытии книги: GET-запрос к knigavuhe → парсинг HTML → список `(имя, длительность, mp3_urls[] )`.
-- Сохраняется в in-memory кэш (`Map<bookId, List<Narrator>>`) на время сессии.
-- Повторное раскрытие той же книги — мгновенно, без запроса.
-- При перезапуске приложения кэш пуст.
-
-Никаких долгих тапов. Только обычный тап. При has_audio=1 — всегда раскрытие, а не мгновенный переход.
+Чтецы кэшируются in-memory на время сессии.
 
 ---
 
@@ -726,19 +684,19 @@ player.playbackState.apply {
 
 ```xml
 <entry>
-  <id>urn:flibusta:book:12345</id>           <!-- id = 12345 -->
-  <title>Война и мир</title>
-  <author>
-    <name>Толстой Лев Николаевич</name>
-    <uri>http://flibusta.is/opds/author/6789</uri>
-  </author>
-  <category label="Роман" scheme="..." term="roman"/>
-  <content type="text">Аннотация книги...</content>
-  <link href="/opds/author/6789" rel="related" type="application/atom+xml;profile=opds-catalog"/>
-  <link href="/b/12345/fb2" rel="http://opds-spec.org/acquisition" type="application/fb2+zip"/>
-  <link href="/b/12345/epub" rel="http://opds-spec.org/acquisition" type="application/epub+zip"/>
-  <published>2024-01-15T00:00:00Z</published>
-  <updated>2024-06-20T00:00:00Z</updated>
+ <id>urn:flibusta:book:12345</id> <!-- id = 12345 -->
+ <title>Война и мир</title>
+ <author>
+ <name>Толстой Лев Николаевич</name>
+ <uri>http://flibusta.is/opds/author/6789</uri>
+ </author>
+ <category label="Роман" scheme="..." term="roman"/>
+ <content type="text">Аннотация книги...</content>
+ <link href="/opds/author/6789" rel="related" type="application/atom+xml;profile=opds-catalog"/>
+ <link href="/b/12345/fb2" rel="http://opds-spec.org/acquisition" type="application/fb2+zip"/>
+ <link href="/b/12345/epub" rel="http://opds-spec.org/acquisition" type="application/epub+zip"/>
+ <published>2024-01-15T00:00:00Z</published>
+ <updated>2024-06-20T00:00:00Z</updated>
 </entry>
 ```
 
@@ -760,24 +718,24 @@ player.playbackState.apply {
 ```html
 <!-- Оценки пользователей в комментариях -->
 <div class="book-rating">
-  <span class="vote-up">отлично!</span> (<span class="count">12</span>)
-  <span class="vote-good">хорошо</span> (<span class="count">8</span>)
-  <span class="vote-normal">неплохо</span> (<span class="count">3</span>)
-  <span class="vote-bad">плохо</span> (<span class="count">1</span>)
-  <span class="vote-terrible">нечитаемо</span> (<span class="count">0</span>)
+ <span class="vote-up">отлично!</span> (<span class="count">12</span>)
+ <span class="vote-good">хорошо</span> (<span class="count">8</span>)
+ <span class="vote-normal">неплохо</span> (<span class="count">3</span>)
+ <span class="vote-bad">плохо</span> (<span class="count">1</span>)
+ <span class="vote-terrible">нечитаемо</span> (<span class="count">0</span>)
 </div>
 
 <!-- Или список комментариев с оценками -->
 <div class="comment">
-  <span class="comment-rating">5</span>  <!-- или 4, 3, 2, 1 -->
-  ...
+ <span class="comment-rating">5</span> <!-- или 4, 3, 2, 1 -->
+ ...
 </div>
 ```
 
 **Формула рейтинга:**
 ```
 rating = (5 * отлично + 4 * хорошо + 3 * неплохо + 2 * плохо + 1 * нечитаемо)
-         / (отлично + хорошо + неплохо + плохо + нечитаемо)
+ / (отлично + хорошо + неплохо + плохо + нечитаемо)
 ```
 
 Результат 0.0–5.0. Если голосов нет → `votes_count = 0`, `rating = 0.0`.
@@ -834,15 +792,15 @@ HTML-ответ, парсинг:
 
 ```html
 <div class="search-results">
-  <div class="book-item">
-    <a href="/book/prestuplenie-i-nakazanie/">
-      <img src="/uploads/covers/prestuplenie.jpg" alt="Преступление и наказание">
-      <span class="book-title">Преступление и наказание</span>
-      <span class="book-author">Фёдор Достоевский</span>
-      <span class="book-reader">Иван Петров</span>
-    </a>
-  </div>
-  <!-- ещё результаты -->
+ <div class="book-item">
+ <a href="/book/prestuplenie-i-nakazanie/">
+ <img src="/uploads/covers/prestuplenie.jpg" alt="Преступление и наказание">
+ <span class="book-title">Преступление и наказание</span>
+ <span class="book-author">Фёдор Достоевский</span>
+ <span class="book-reader">Иван Петров</span>
+ </a>
+ </div>
+ <!-- ещё результаты -->
 </div>
 ```
 
@@ -863,63 +821,63 @@ HTML-ответ, парсинг:
 
 ```html
 <div class="book-page">
-  <h1>Преступление и наказание</h1>
-  <div class="book-meta">
-    <span class="author">Фёдор Достоевский</span>
-  </div>
+ <h1>Преступление и наказание</h1>
+ <div class="book-meta">
+ <span class="author">Фёдор Достоевский</span>
+ </div>
 
-  <!-- Список чтецов (может быть несколько) -->
-  <div class="readers-list">
-    <div class="reader-item" data-reader-id="123">
-      <span class="reader-name">Иван Петров</span>
-      <span class="reader-duration">14:23:00</span>
-    </div>
-    <div class="reader-item" data-reader-id="456">
-      <span class="reader-name">Елена Соколова</span>
-      <span class="reader-duration">15:01:00</span>
-    </div>
-  </div>
+ <!-- Список чтецов (может быть несколько) -->
+ <div class="readers-list">
+ <div class="reader-item" data-reader-id="123">
+ <span class="reader-name">Иван Петров</span>
+ <span class="reader-duration">14:23:00</span>
+ </div>
+ <div class="reader-item" data-reader-id="456">
+ <span class="reader-name">Елена Соколова</span>
+ <span class="reader-duration">15:01:00</span>
+ </div>
+ </div>
 
-  <!-- MP3 треки в data-атрибутах (скрыты в JS) -->
-  <script>
-    var audioFiles = {
-      "123": [
-        {"url": "/uploads/audio/prestuplenie/01.mp3", "title": "Глава 1", "duration": "45:12"},
-        {"url": "/uploads/audio/prestuplenie/02.mp3", "title": "Глава 2", "duration": "38:45"},
-        ...
-      ],
-      "456": [
-        {"url": "/uploads/audio/prestuplenie_es/01.mp3", "title": "Глава 1", "duration": "47:30"},
-        ...
-      ]
-    };
-  </script>
+ <!-- MP3 треки в data-атрибутах (скрыты в JS) -->
+ <script>
+ var audioFiles = {
+ "123": [
+ {"url": "/uploads/audio/prestuplenie/01.mp3", "title": "Глава 1", "duration": "45:12"},
+ {"url": "/uploads/audio/prestuplenie/02.mp3", "title": "Глава 2", "duration": "38:45"},
+ ...
+ ],
+ "456": [
+ {"url": "/uploads/audio/prestuplenie_es/01.mp3", "title": "Глава 1", "duration": "47:30"},
+ ...
+ ]
+ };
+ </script>
 </div>
 ```
 
 **Что извлекается:**
 - Для каждого `.reader-item`:
-  - `name`: текст `.reader-name`
-  - `duration_raw`: текст `.reader-duration` (HH:MM:SS)
-  - `duration_sec`: парсинг в секунды
-  - `reader_id`: `data-reader-id`
+ - `name`: текст `.reader-name`
+ - `duration_raw`: текст `.reader-duration` (HH:MM:SS)
+ - `duration_sec`: парсинг в секунды
+ - `reader_id`: `data-reader-id`
 - Из JavaScript-переменной `audioFiles`:
-  - для каждого `reader_id` → массив треков с `url`, `title`, `duration`
-  - URL: дополняется до `https://knigavuhe.org<url>`
+ - для каждого `reader_id` → массив треков с `url`, `title`, `duration`
+ - URL: дополняется до `https://knigavuhe.org<url>`
 
 #### Формат возврата (API для Coder)
 
 ```kotlin
 data class NarratorInfo(
-    val name: String,
-    val durationSeconds: Long,
-    val tracks: List<TrackInfo>
+ val name: String,
+ val durationSeconds: Long,
+ val tracks: List<TrackInfo>
 )
 
 data class TrackInfo(
-    val title: String,
-    val url: String,        // полный URL MP3
-    val durationSeconds: Long
+ val title: String,
+ val url: String, // полный URL MP3
+ val durationSeconds: Long
 )
 
 // Возврат
@@ -931,16 +889,16 @@ fun fetchNarrators(bookId: Long, title: String, author: String): List<NarratorIn
 ```kotlin
 // В ViewModel или синглтоне
 object NarratorCache {
-    private val cache = ConcurrentHashMap<Long, List<NarratorInfo>>()  // thread-safe
+ private val cache = ConcurrentHashMap<Long, List<NarratorInfo>>() // thread-safe
 
-    suspend fun get(bookId: Long, title: String, author: String): List<NarratorInfo> {
-        cache[bookId]?.let { return it }
-        val narrators = KnigavuheParser.fetchNarrators(bookId, title, author)
-        cache[bookId] = narrators
-        return narrators
-    }
+ suspend fun get(bookId: Long, title: String, author: String): List<NarratorInfo> {
+ cache[bookId]?.let { return it }
+ val narrators = KnigavuheParser.fetchNarrators(bookId, title, author)
+ cache[bookId] = narrators
+ return narrators
+ }
 
-    fun clear() { cache.clear() }
+ fun clear() { cache.clear() }
 }
 ```
 
@@ -950,15 +908,15 @@ object NarratorCache {
 
 ```kotlin
 val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-    .setUserAgent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
-    .setDefaultRequestProperties(mapOf("Referer" to "https://knigavuhe.org/"))
+ .setUserAgent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+ .setDefaultRequestProperties(mapOf("Referer" to "https://knigavuhe.org/"))
 
 val player = ExoPlayer.Builder(context)
-    .setMediaSourceFactory(
-        DefaultMediaSourceFactory(context)
-            .setDataSourceFactory(httpDataSourceFactory)
-    )
-    .build()
+ .setMediaSourceFactory(
+ DefaultMediaSourceFactory(context)
+ .setDataSourceFactory(httpDataSourceFactory)
+ )
+ .build()
 ```
 
 Без этого плеер получит 403 Forbidden.
@@ -988,7 +946,7 @@ IllegalStateException: Pre-packaged database has an invalid schema.
 **ℹ️ Чтобы Room сгенерировал JSON схемы**, в `app/build.gradle.kts` нужно добавить:
 ```kotlin
 ksp {
-    arg("room.schemaLocation", "$projectDir/schemas")
+ arg("room.schemaLocation", "$projectDir/schemas")
 }
 ```
 Без этого аргумента папка `schemas` будет пуста, и скрипт не сможет сверить DDL.
@@ -1001,16 +959,16 @@ Room при первом запуске копирует `assets/databases/voxli
 ```kotlin
 // WorkManager Worker
 class CatalogUpdateWorker : CoroutineWorker() {
-    override suspend fun doWork(): Result {
-        // 1. OPDS /opds/new/0/new?offset=0, 100, 200...
-        //    Проверять по id: если книги нет в локальной БД → INSERT
-        //                        если есть → UPDATE (rating, has_fb2, has_epub)
-        //    Новинок ~770 в неделю. За раз — 100, на всё — 7-8 запросов.
-        // 2. Раз в неделю:
-        //    Для книг с has_audio=0 (или где has_audio не проверялся давно)
-        //    → Knigavuhe match → UPDATE has_audio
-        return Result.success()
-    }
+ override suspend fun doWork(): Result {
+ // 1. OPDS /opds/new/0/new?offset=0, 100, 200...
+ // Проверять по id: если книги нет в локальной БД → INSERT
+ // если есть → UPDATE (rating, has_fb2, has_epub)
+ // Новинок ~770 в неделю. За раз — 100, на всё — 7-8 запросов.
+ // 2. Раз в неделю:
+ // Для книг с has_audio=0 (или где has_audio не проверялся давно)
+ // → Knigavuhe match → UPDATE has_audio
+ return Result.success()
+ }
 }
 ```
 
@@ -1035,12 +993,12 @@ class CatalogUpdateWorker : CoroutineWorker() {
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">flibusta.is</domain>
-        <domain includeSubdomains="true">flibusta.site</domain>
-        <domain includeSubdomains="true">flibusta.net</domain>
-        <domain includeSubdomains="true">knigavuhe.org</domain>
-    </domain-config>
+ <domain-config cleartextTrafficPermitted="true">
+ <domain includeSubdomains="true">flibusta.is</domain>
+ <domain includeSubdomains="true">flibusta.site</domain>
+ <domain includeSubdomains="true">flibusta.net</domain>
+ <domain includeSubdomains="true">knigavuhe.org</domain>
+ </domain-config>
 </network-security-config>
 ```
 
@@ -1055,8 +1013,8 @@ OkHttp имеет официальную поддержку `DnsOverHttps`. Ktor
 
 ```kotlin
 val dependencies {
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0")
+ implementation("com.squareup.okhttp3:okhttp:4.12.0")
+ implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0")
 }
 ```
 
@@ -1065,14 +1023,14 @@ val appCache = Cache(File(context.cacheDir, "http_cache"), 10L * 1024L * 1024L)
 val bootstrapClient = OkHttpClient.Builder().cache(appCache).build()
 
 val dns = DnsOverHttps.Builder()
-    .client(bootstrapClient)
-    .url("https://cloudflare-dns.com/dns-query".toHttpUrl())
-    .bootstrapDnsHosts(InetAddress.getByName("1.1.1.1"), InetAddress.getByName("1.0.0.1"))
-    .build()
+ .client(bootstrapClient)
+ .url("https://cloudflare-dns.com/dns-query".toHttpUrl())
+ .bootstrapDnsHosts(InetAddress.getByName("1.1.1.1"), InetAddress.getByName("1.0.0.1"))
+ .build()
 
 val okHttpClient = OkHttpClient.Builder()
-    .dns(dns)
-    .build()
+ .dns(dns)
+ .build()
 
 // (Ktor не используется — OkHttp напрямую)
 // Для OPDS-запросов: okHttpClient.newCall(request).execute().body?.string()
@@ -1084,10 +1042,10 @@ val okHttpClient = OkHttpClient.Builder()
 
 ```kotlin
 install(HttpHeaders) {
-    defaultRequest {
-        header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
-        header("Accept", "text/html,application/xml,application/atom+xml,*/*")
-    }
+ defaultRequest {
+ header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+ header("Accept", "text/html,application/xml,application/atom+xml,*/*")
+ }
 }
 ```
 
@@ -1096,3 +1054,43 @@ install(HttpHeaders) {
 - Поддержка HTTP/SOCKS5-прокси через настройки приложения.
 - Интеграция с Orbot (Tor) через `SOCKS5 127.0.0.1:9050` — для регионов с блокировкой по IP.
 - Определяется автоматически по таймаутам запросов.
+
+---
+
+## 16. Fallback: Readium Kotlin Toolkit
+
+Если после рефакторинга (выделение `TextMeasurer`) проблема с тестированием пагинатора
+не будет решена — заменяем собственную пагинацию на Readium Kotlin Toolkit.
+
+### Условия перехода
+
+1. `PaginatorTest` (15 тестов) не проходит без Robolectric.
+2. `AndroidTextMeasurerTest` не работает с Robolectric (тест одной строки).
+3. Общее время на отладку Robolectric превысило 4 часа.
+
+### Что меняется
+
+```kotlin
+// Вместо Paginator + TextMeasurer
+dependencies {
+ implementation("org.readium.kotlin-toolkit:readium-navigator:3.x")
+}
+```
+
+- `readium-navigator` предоставляет `EpubNavigatorFragment` — готовую View с пагинацией.
+- Поддерживает: reflowable EPUB, FXL, поиск, TTS, RTL, кастомные шрифты.
+- Навигация: `navigator.goForward()`, `navigator.goBackward()`, `navigator.go(Locator)`.
+- Прогресс: `Locator.locations.position` (0.0–1.0) — аналог `char_offset`.
+- Не нужен собственный `Paginator`, `TextMeasurer`, `AndroidTextMeasurer`.
+- Тестировать нечего — библиотека протестирована Readium Foundation.
+
+### Что остаётся
+
+- Свои парсеры FB2/EPUB (TextLector) — OK, Readium использует собственный EPUB-парсер.
+ При переходе конвертируем `DocumentModel` в Readium `Publication` или используем `readium-streamer`.
+- `ReaderViewModel` — адаптировать под Readium навигатор.
+- Зоны тапа — Readium предоставляет кастомные регионы.
+
+### Решение о переходе
+
+Принимается Architect, если хотя бы одно из условий выше выполнено.

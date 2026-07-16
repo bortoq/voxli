@@ -9,9 +9,17 @@ set -e
 
 echo "🔍 Pre-commit: запуск верификации контракта roadmap..."
 
-# Найти JDK
-if [ -d /tmp/jdk21 ]; then
-    export JAVA_HOME=/tmp/jdk21
+# Найти JDK — использовать JAVA_HOME из окружения
+if [ -z "$JAVA_HOME" ]; then
+    echo "⚠️  JAVA_HOME не установлен. Пытаемся найти JDK через PATH..."
+    if command -v java &> /dev/null; then
+        JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(which java)")")")
+        export JAVA_HOME
+        export PATH="$JAVA_HOME/bin:$PATH"
+    else
+        echo "⚠️  Java не найдена в PATH — возможны ошибки сборки"
+    fi
+else
     export PATH="$JAVA_HOME/bin:$PATH"
 fi
 

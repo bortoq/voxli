@@ -16,7 +16,10 @@ class AudioDownloader(
     private val context: Context,
     private val client: OkHttpClient,
 ) {
-    private val cacheDir: File get() = File(context.cacheDir, "audio").also { it.mkdirs() }
+    private val cacheDir: File by lazy { File(context.cacheDir, "audio").also { it.mkdirs() } }
+
+    // In-memory cache for HEAD responses to avoid N HEAD requests per book open
+    private val contentLengthCache = mutableMapOf<String, Long>()
 
     /**
      * Download a single MP3 track.
@@ -35,31 +38,36 @@ class AudioDownloader(
         // If fully downloaded, return cached
         if (file.exists() && file.length() > 0) {
             val existingLen = file.length()
-            // Quick check: try to get content-length
-            val headRequest = okhttp3.Request.Builder()
-                .url(url)
-                .head()
-                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
-                .header("Referer", "https://knigavuhe.org/")
-                .build()
 
-            try {
-                val headResponse = client.newCall(headRequest).execute()
-                val contentLength = headResponse.body?.contentLength() ?: -1
-                headResponse.close()
-
-                if (contentLength > 0 && existingLen >= contentLength) {
-                    return@withContext file
+            // Check content-length from cache (avoids N HEAD requests per book)
+            val contentLength = contentLengthCache.getOrPut(url) {
+                try {
+                    val headRequest = okhttp3.Request.Builder()
+                        .url(url)
+                        .head()
+                        .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                        .header("Referer", "https://knigavuhe.org/")
+                        .build()
+                    val headResponse = client.newCall(headRequest).execute()
+                    val len = headResponse.body?.contentLength() ?: -1
+                    headResponse.close()
+                    len
+                } catch (_: Exception) {
+                    -1L
                 }
+            }
 
-                // Partial download — resume
-                if (contentLength > 0 && existingLen < contentLength) {
-                    return@withContext resumeDownload(url, file, existingLen, contentLength, onProgress)
-                }
-            } catch (_: Exception) {
-                // Can't verify, use cached file as-is
+            if (contentLength > 0 && existingLen >= contentLength) {
                 return@withContext file
             }
+
+            // Partial download — resume
+            if (contentLength > 0 && existingLen < contentLength) {
+                return@withContext resumeDownload(url, file, existingLen, contentLength, onProgress)
+            }
+
+            // Can't verify content length, use cached file as-is
+            return@withContext file
         }
 
         // Fresh download
@@ -122,7 +130,18 @@ class AudioDownloader(
 
             val body = response.body ?: return null
             body.byteStream().use { input ->
-                file.appendBytes(input.readBytes())
+                file.outputStream().use { output ->
+                    val buffer = ByteArray(8192)
+                    var read: Int
+                    var bytesRead = existingBytes
+                    while (input.read(buffer).also { read = it } != -1) {
+                        output.write(buffer, 0, read)
+                        bytesRead += read
+                        if (totalBytes > 0) {
+                            onProgress?.invoke(bytesRead.toFloat() / totalBytes)
+                        }
+                    }
+                }
             }
 
             onProgress?.invoke(1.0f)

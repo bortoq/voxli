@@ -28,15 +28,14 @@ abstract class VoxliDatabase : RoomDatabase() {
             )
 
             // Use seed DB if available, otherwise start fresh
-            try {
-                context.assets.open("databases/voxli_seed.db").use { it.close() }
-                builder.createFromAsset("databases/voxli_seed.db")
-            } catch (_: Exception) {
-                // seed file not in assets — build from scratch
+            val seedName = "voxli_seed.db"
+            if (context.assets.list("databases")?.contains(seedName) == true) {
+                builder.createFromAsset("databases/$seedName")
             }
 
             return builder
                 .addCallback(FtsCallback())
+                .addCallback(IndexCallback())
                 .build()
         }
 
@@ -74,6 +73,17 @@ abstract class VoxliDatabase : RoomDatabase() {
                         INSERT INTO books_fts(rowid, title, author) VALUES (new.id, new.title, new.author);
                     END
                 """.trimIndent())
+            }
+        }
+
+        /**
+         * Adds index on genre column for faster genre-based queries.
+         * Runs on every open to ensure index exists (seed DB may not have it).
+         */
+        private class IndexCallback : Callback() {
+            override fun onOpen(db: SupportSQLiteDatabase) {
+                super.onOpen(db)
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_genre ON books(genre)")
             }
         }
     }

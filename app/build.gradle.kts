@@ -46,10 +46,25 @@ android {
         compose = true
     }
 
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+        }
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+    }
+}
+
+// ─── Test configuration ────────────────────────────────────────────
+tasks.withType<Test>().configureEach {
+    useJUnitPlatform()
+    testLogging {
+        events("passed", "skipped", "failed")
+        showStandardStreams = true
     }
 }
 
@@ -58,7 +73,8 @@ android {
 tasks.register<Exec>("verifyContract") {
     dependsOn("assembleDebug")
     workingDir = rootProject.projectDir
-    commandLine("python3", "scripts/verify_contract.py", "--apk", 
+    val pythonCmd = if (System.getProperty("os.name").lowercase().contains("win")) "python" else "python3"
+    commandLine(pythonCmd, "scripts/verify_contract.py", "--apk", 
         "${projectDir}/build/outputs/apk/debug/app-debug.apk")
     isIgnoreExitValue = false
     doFirst {
@@ -115,4 +131,21 @@ dependencies {
 
     // Coil
     implementation(libs.coil.compose)
+
+    // ─── Test dependencies ────────────────────────────────────────
+    testImplementation(libs.robolectric)
+    testImplementation(libs.junit4)
+    testRuntimeOnly(libs.junit.vintage.engine)
+    testRuntimeOnly(libs.junit.jupiter.engine)
+    testImplementation(libs.mockk)
+    testImplementation(libs.coroutines.test)
+    testImplementation(libs.turbine)
+
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.rules)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.room.testing)
+    androidTestImplementation(libs.mockk)
+    androidTestImplementation(libs.coroutines.test)
 }

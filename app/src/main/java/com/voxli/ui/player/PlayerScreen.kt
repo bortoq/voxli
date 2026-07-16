@@ -49,6 +49,7 @@ fun PlayerScreen(
     onSeek: (Float) -> Unit,    // 0.0–1.0
     onSpeedChange: (Float) -> Unit,
     onTrackSelect: (Int) -> Unit,
+    onTapReader: () -> Unit,    // toggle back to reader
     // Colors
     bgColor: Color = Color(0xFF1A1A2E),
     accentColor: Color = Color(0xFFE94560),
@@ -80,48 +81,55 @@ fun PlayerScreen(
                 .padding(padding)
                 .padding(horizontal = 16.dp),
         ) {
-            // ---- Cover / Book Info ----
+            // ---- Cover / Book Info (tap to toggle to Reader) ----
             Spacer(Modifier.height(16.dp))
 
-            // Placeholder cover
             Box(
                 modifier = Modifier
-                    .size(200.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(accentColor.copy(alpha = 0.3f))
-                    .align(Alignment.CenterHorizontally),
+                    .fillMaxWidth()
+                    .clickable { onTapReader() },
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(
-                    Icons.Default.Headphones,
-                    contentDescription = null,
-                    tint = accentColor,
-                    modifier = Modifier.size(64.dp),
-                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    // Placeholder cover
+                    Box(
+                        modifier = Modifier
+                            .size(200.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(accentColor.copy(alpha = 0.3f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Default.Headphones,
+                            contentDescription = null,
+                            tint = accentColor,
+                            modifier = Modifier.size(64.dp),
+                        )
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+
+                    Text(
+                        text = bookTitle,
+                        color = textColor,
+                        style = MaterialTheme.typography.headlineSmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+
+                    Text(
+                        text = bookAuthor,
+                        color = textColor.copy(alpha = 0.7f),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+
+                    Text(
+                        text = "Читает: $narratorName",
+                        color = textColor.copy(alpha = 0.5f),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
-
-            Spacer(Modifier.height(16.dp))
-
-            Text(
-                text = bookTitle,
-                color = textColor,
-                style = MaterialTheme.typography.headlineSmall,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.align(Alignment.CenterHorizontally),
-            )
-
-            Text(
-                text = bookAuthor,
-                color = textColor.copy(alpha = 0.7f),
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.align(Alignment.CenterHorizontally),
-            )
-
-            Text(
-                text = "Читает: $narratorName",
-                color = textColor.copy(alpha = 0.5f),
-                style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.align(Alignment.CenterHorizontally),
             )
 

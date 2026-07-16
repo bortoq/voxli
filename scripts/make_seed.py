@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Fast seed DB generator — fetches new books from flibusta OPDS."""
+"""
+⚠️  DEPRECATED for full seed — use create_seed_from_catalog.py for initial DB.
+
+This script is useful only for INCREMENTAL updates via OPDS new feed.
+For the full catalog, use:  python3 scripts/create_seed_from_catalog.py
+
+Fast seed DB generator — fetches new books from flibusta OPDS."""
 
 import sqlite3, urllib.request, re, xml.etree.ElementTree as ET, sys, os
 

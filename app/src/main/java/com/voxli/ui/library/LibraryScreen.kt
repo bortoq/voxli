@@ -1,6 +1,7 @@
 package com.voxli.ui.library
 
 import androidx.compose.animation.*
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -16,19 +17,30 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.voxli.catalog.db.BookEntity
+import com.voxli.catalog.db.HistoryWithBook
 import com.voxli.catalog.db.sanitizeFtsQuery
-import com.voxli.ui.library.LibraryViewMode
+import com.voxli.reader.engine.NarratorInfo
 
 /**
- * Library main screen with real data, pull-to-refresh, search, genres, sorting.
- *
- * Reference: roadmap §8 (Library), §10 Phase 4 (pull-to-refresh, error handling).
+ * Library main screen.
+ * Roadmap §8: search + book list (grouped by series) + progress bar.
  */
+
+/** Progress bar step: 0=narrow, 1=sort, 2=bg, 3=text, 4=font */
+private enum class BarStep { NARROW, SORT, BG, TEXT, FONT }
+private fun BarStep.next(): BarStep = when (this) {
+    BarStep.NARROW -> BarStep.SORT
+    BarStep.SORT -> BarStep.BG
+    BarStep.BG -> BarStep.TEXT
+    BarStep.TEXT -> BarStep.FONT
+    BarStep.FONT -> BarStep.NARROW
+}
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryScreen(
@@ -36,21 +48,40 @@ fun LibraryScreen(
     onBookClick: (BookEntity) -> Unit,
     onHistoryClick: () -> Unit,
     onFilterClick: () -> Unit,
+    onReadBook: (Long) -> Unit,
+    onPlayBook: (Long, Long) -> Unit,
 ) {
     val searchQuery by viewModel.searchQuery.collectAsState()
-    val viewMode by viewModel.viewMode.collectAsState()
-    val authors by viewModel.authors.collectAsState()
     val books by viewModel.books.collectAsState()
     val isRefreshing by viewModel.isRefreshing.collectAsState()
     val error by viewModel.error.collectAsState()
-    val filterAuthor by viewModel.filterAuthor.collectAsState()
     val selectedGenres by viewModel.selectedGenres.collectAsState()
+    val isLoading by viewModel.isLoading.collectAsState()
+    val sortField by viewModel.sortField.collectAsState()
 
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
     val listState = rememberLazyListState()
     val snackbarHostState = remember { SnackbarHostState() }
     val pullToRefreshState = rememberPullToRefreshState()
+
+    // Track which book card is expanded (null = none)
+    var expandedBookId by remember { mutableStateOf<Long?>(null) }
+
+    // Narrator cache for expanded card
+    var narrators by remember { mutableStateOf<List<NarratorInfo>>(emptyList()) }
+    var narratorsLoading by remember { mutableStateOf(false) }
+
+    // Load narrators when card expands
+    LaunchedEffect(expandedBookId) {
+        val bookId = expandedBookId ?: return@LaunchedEffect
+        narratorsLoading = true
+        narrators = viewModel.loadNarrators(bookId)
+        narratorsLoading = false
+    }
+
+    // Progress bar state
+    var barStep by remember { mutableStateOf(BarStep.NARROW) }
 
     // Auto-hide keyboard on scroll
     val isScrollInProgress by remember { derivedStateOf { listState.isScrollInProgress } }
@@ -68,33 +99,23 @@ fun LibraryScreen(
         }
     }
 
+    // Calculate scroll progress
+    val scrollProgress by remember {
+        derivedStateOf {
+            val layoutInfo = listState.layoutInfo
+            val total = layoutInfo.totalItemsCount
+            if (total <= 1) Pair(0, 0)
+            else {
+                val firstVisible = layoutInfo.visibleItemsInfo.firstOrNull()
+                if (firstVisible != null) Pair(firstVisible.index + 1, total)
+                else Pair(0, total)
+            }
+        }
+    }
+    val isNarrow = barStep == BarStep.NARROW
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
-        topBar = {
-            TopAppBar(
-                title = { Text("Voxli") },
-                actions = {
-                    // Filter button
-                    IconButton(onClick = onFilterClick) {
-                        BadgedBox(badge = {
-                            if (selectedGenres.isNotEmpty()) {
-                                Badge { Text("${selectedGenres.size}") }
-                            }
-                        }) {
-                            Icon(Icons.Default.FilterList, contentDescription = "Фильтр")
-                        }
-                    }
-                    // History button
-                    IconButton(onClick = onHistoryClick) {
-                        Icon(Icons.Default.History, contentDescription = "История")
-                    }
-                    // View mode toggle
-                    TextButton(onClick = { viewModel.toggleViewMode() }) {
-                        Text(if (viewMode == LibraryViewMode.AUTHORS) "Авторы ▼" else "Названия ▼")
-                    }
-                },
-            )
-        }
     ) { padding ->
         PullToRefreshBox(
             isRefreshing = isRefreshing,
@@ -105,61 +126,154 @@ fun LibraryScreen(
                 .padding(padding),
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
-                // Search field
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { viewModel.setSearchQuery(it) },
+                // Top row: search + genre count + history
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                        .focusRequester(focusRequester),
-                    placeholder = {
-                        Text(if (viewMode == LibraryViewMode.AUTHORS) "Поиск авторов…" else "Поиск по названию…")
-                    },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                    trailingIcon = {
-                        if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { viewModel.setSearchQuery("") }) {
-                                Icon(Icons.Default.Clear, contentDescription = "Очистить")
+                        .padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { viewModel.setSearchQuery(it) },
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(focusRequester),
+                        placeholder = { Text("Поиск...") },
+                        leadingIcon = {
+                            Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(20.dp))
+                        },
+                        trailingIcon = {
+                            if (searchQuery.isNotEmpty()) {
+                                IconButton(onClick = { viewModel.setSearchQuery("") }) {
+                                    Icon(Icons.Default.Clear, contentDescription = "Очистить", modifier = Modifier.size(20.dp))
+                                }
                             }
-                        }
-                    },
-                    singleLine = true,
-                )
+                        },
+                        singleLine = true,
+                    )
 
-                // Content
-                AnimatedContent(
-                    targetState = viewMode,
-                    transitionSpec = {
-                        fadeIn() togetherWith fadeOut()
-                    },
-                    label = "view_mode",
-                ) { mode ->
-                    when (mode) {
-                        LibraryViewMode.AUTHORS -> AuthorList(
-                            authors = authors,
-                            filterAuthor = null,
-                            onAuthorClick = { viewModel.selectAuthor(it) },
-                        )
-                        LibraryViewMode.TITLES -> BookList(
-                            books = books,
-                            filterAuthor = filterAuthor,
-                            onBookClick = onBookClick,
+                    Surface(
+                        onClick = onFilterClick,
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        modifier = Modifier.padding(start = 8.dp),
+                    ) {
+                        Text(
+                            text = "${selectedGenres.size}",
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
                         )
                     }
+
+                    IconButton(onClick = onHistoryClick) {
+                        Icon(Icons.Default.History, contentDescription = "История")
+                    }
                 }
+
+                // Loading indicator
+                if (isLoading) {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth().height(4.dp),
+                    )
+                }
+
+                // Book list
+                BookList(
+                    books = books,
+                    viewModel = viewModel,
+                    listState = listState,
+                    expandedBookId = expandedBookId,
+                    onToggleExpand = { id ->
+                        expandedBookId = if (expandedBookId == id) null else id
+                    },
+                    narrators = narrators,
+                    narratorsLoading = narratorsLoading,
+                    onReadBook = onReadBook,
+                    onPlayBook = onPlayBook,
+                )
+
+                // Bottom progress bar
+                ProgressBar(
+                    step = barStep,
+                    scrollPos = scrollProgress.first,
+                    scrollTotal = scrollProgress.second,
+                    isNarrow = isNarrow,
+                    sortLabel = when (sortField) {
+                        SortField.RATING -> "по рейтингу"
+                        SortField.TITLE -> "по названию"
+                        SortField.AUTHOR -> "по автору"
+                    },
+                    onTap = {
+                        if (isNarrow) {
+                            barStep = BarStep.SORT
+                        } else if (barStep == BarStep.FONT) {
+                            barStep = BarStep.NARROW
+                        } else {
+                            if (barStep == BarStep.SORT) viewModel.cycleSort()
+                            barStep = barStep.next()
+                        }
+                    },
+                )
             }
         }
     }
 }
 
 @Composable
-private fun AuthorList(
-    authors: List<String>,
-    filterAuthor: String?,
-    onAuthorClick: (String) -> Unit,
+private fun ProgressBar(
+    step: BarStep,
+    scrollPos: Int,
+    scrollTotal: Int,
+    isNarrow: Boolean,
+    sortLabel: String,
+    onTap: () -> Unit,
 ) {
-    if (authors.isEmpty()) {
+    val barHeight = if (isNarrow) 8.dp else 24.dp
+    val label = when (step) {
+        BarStep.NARROW -> "[≡≡] $scrollPos / $scrollTotal"
+        BarStep.SORT -> "[≡≡] Сорт: $sortLabel"
+        BarStep.BG -> "[≡≡] Фон: цвет ярк"
+        BarStep.TEXT -> "[≡≡] Текст: цв ярк"
+        BarStep.FONT -> "[≡≡] Шрифт: гарн разм"
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(barHeight)
+            .background(MaterialTheme.colorScheme.primaryContainer)
+            .clickable { onTap() },
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onPrimaryContainer,
+            modifier = Modifier.padding(start = 8.dp),
+        )
+    }
+}
+
+@Composable
+private fun BookList(
+    books: List<BookEntity>,
+    viewModel: LibraryViewModel,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    expandedBookId: Long?,
+    onToggleExpand: (Long) -> Unit,
+    narrators: List<NarratorInfo>,
+    narratorsLoading: Boolean,
+    onReadBook: (Long) -> Unit,
+    onPlayBook: (Long, Long) -> Unit,
+) {
+    val historyList by viewModel.history.collectAsStateWithLifecycle()
+    val progressMap: Map<Long, Double> = remember(historyList) {
+        historyList.associate { it.bookId to it.progress }
+    }
+
+    if (books.isEmpty()) {
         Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center,
@@ -174,109 +288,54 @@ private fun AuthorList(
     }
 
     LazyColumn(
+        state = listState,
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        items(authors, key = { it }) { author ->
-            Surface(
-                onClick = { onAuthorClick(author) },
-                modifier = Modifier.fillMaxWidth(),
-                color = MaterialTheme.colorScheme.surface,
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 10.dp, horizontal = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        Icons.Default.Person,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp),
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Text(
-                        text = author,
-                        style = MaterialTheme.typography.bodyLarge,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Icon(
-                        Icons.Default.ChevronRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                    )
-                }
-            }
-        }
-    }
-}
+        // Single pass: group by series in one iteration
+        val grouped = books.groupBy { it.series.ifEmpty { null } }
+        val seriesEntries = grouped.filterKeys { it != null }
+            .entries
+            .sortedBy { (_, bks) -> bks.minOf { it.seriesNum } }
+        val standaloneEntries = grouped[null] ?: emptyList()
 
-@Composable
-private fun BookList(
-    books: List<BookEntity>,
-    filterAuthor: String?,
-    onBookClick: (BookEntity) -> Unit,
-) {
-    if (books.isEmpty()) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center,
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                if (filterAuthor != null) {
-                    Text(
-                        "Нет книг для автора: $filterAuthor",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    Text(
-                        "Ничего не найдено",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-        return
-    }
-
-    // Group by series if applicable
-    val groupedBooks = books.groupBy { it.series to it.seriesNum }
-
-    LazyColumn(
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
-        // Group header for series
-        val seriesGroups = books
-            .filter { it.series.isNotEmpty() }
-            .groupBy { it.series }
-            .toList()
-            .sortedBy { (_, books) -> books.minOf { it.seriesNum } }
-
-        val standaloneBooks = books.filter { it.series.isEmpty() }
-
-        for ((seriesName, seriesBooks) in seriesGroups) {
+        for ((seriesName, seriesBooks) in seriesEntries) {
             item {
                 Text(
-                    text = seriesName.uppercase(),
+                    text = seriesName!!.uppercase(),
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
                 )
             }
             items(seriesBooks.sortedBy { it.seriesNum }, key = { it.id }) { book ->
-                BookItem(book = book, onClick = { onBookClick(book) }, showSeriesNum = true)
+                BookItem(
+                    book = book,
+                    showSeriesNum = true,
+                    progress = progressMap[book.id] ?: 0.0,
+                    isExpanded = expandedBookId == book.id,
+                    onToggle = { onToggleExpand(book.id) },
+                    narrators = if (expandedBookId == book.id) narrators else emptyList(),
+                    narratorsLoading = narratorsLoading && expandedBookId == book.id,
+                    onRead = { onReadBook(book.id) },
+                    onPlay = { onPlayBook(book.id, it) },
+                )
             }
         }
 
-        if (standaloneBooks.isNotEmpty()) {
-            items(standaloneBooks, key = { it.id }) { book ->
-                BookItem(book = book, onClick = { onBookClick(book) }, showSeriesNum = false)
+        if (standaloneEntries.isNotEmpty()) {
+            items(standaloneEntries, key = { it.id }) { book ->
+                BookItem(
+                    book = book,
+                    showSeriesNum = false,
+                    progress = progressMap[book.id] ?: 0.0,
+                    isExpanded = expandedBookId == book.id,
+                    onToggle = { onToggleExpand(book.id) },
+                    narrators = if (expandedBookId == book.id) narrators else emptyList(),
+                    narratorsLoading = narratorsLoading && expandedBookId == book.id,
+                    onRead = { onReadBook(book.id) },
+                    onPlay = { onPlayBook(book.id, it) },
+                )
             }
         }
     }
@@ -285,62 +344,152 @@ private fun BookList(
 @Composable
 private fun BookItem(
     book: BookEntity,
-    onClick: () -> Unit,
     showSeriesNum: Boolean,
+    progress: Double = 0.0,
+    isExpanded: Boolean = false,
+    onToggle: () -> Unit,
+    narrators: List<NarratorInfo>,
+    narratorsLoading: Boolean,
+    onRead: (Long) -> Unit,
+    onPlay: (Long, Long) -> Unit,
 ) {
     Surface(
-        onClick = onClick,
+        onClick = onToggle,
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surface,
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 8.dp, horizontal = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (showSeriesNum) {
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp, bottom = 4.dp, start = 4.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (showSeriesNum) {
+                            Text(
+                                "${book.seriesNum}. ",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         Text(
-                            "${book.seriesNum}. ",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            text = book.title,
+                            style = MaterialTheme.typography.bodyLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                     Text(
-                        text = book.title,
-                        style = MaterialTheme.typography.bodyLarge,
+                        text = book.author,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Text(
-                    text = book.author,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+
+                if (book.rating > 0) {
+                    Text(
+                        text = "★${"%.1f".format(book.rating)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+
+                if (book.hasAudio) {
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = "🎧",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
 
-            // Rating stars
-            if (book.rating > 0) {
-                Text(
-                    text = "★${"%.1f".format(book.rating)}",
-                    style = MaterialTheme.typography.bodySmall,
+            if (progress > 0.0 && progress < 1.0) {
+                LinearProgressIndicator(
+                    progress = { progress.toFloat() },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp).height(3.dp),
                     color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
                 )
             }
 
-            // Audio indicator
-            if (book.hasAudio) {
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    text = "🎧",
-                    style = MaterialTheme.typography.bodySmall,
-                )
+            // Expanded card content
+            AnimatedVisibility(visible = isExpanded) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp, horizontal = 4.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        // Annotation
+                        if (book.annotation.isNotBlank()) {
+                            Text(
+                                text = book.annotation,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 5,
+                                overflow = TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                        }
+
+                        // Narrators section
+                        Text(
+                            text = "Чтецы:",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(Modifier.height(4.dp))
+
+                        if (narratorsLoading) {
+                            Text(
+                                text = "Загрузка...",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else if (narrators.isNotEmpty()) {
+                            narrators.forEach { narrator ->
+                                TextButton(
+                                    onClick = { onPlay(book.id, narrator.readerId) },
+                                    modifier = Modifier.padding(start = 8.dp),
+                                ) {
+                                    Text(
+                                        text = "${narrator.name} (${formatDuration(narrator.durationSeconds)})",
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                            }
+                        } else {
+                            Text(
+                                text = "TTS-озвучка",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 8.dp),
+                            )
+                        }
+
+                        Spacer(Modifier.height(8.dp))
+
+                        // Read button
+                        Button(
+                            onClick = { onRead(book.id) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Читать")
+                        }
+                    }
+                }
             }
         }
     }
+}
+
+private fun formatDuration(seconds: Long): String {
+    val h = seconds / 3600
+    val m = (seconds % 3600) / 60
+    return if (h > 0) "${h}ч ${m}мин" else "${m}мин"
 }

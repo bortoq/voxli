@@ -1,505 +1,525 @@
 #!/usr/bin/env python3
 """
-Seed DB generator for Voxli.
+⚠️  DEPRECATED — use create_seed_from_catalog.py instead.
 
-Generates voxli_seed.db (top-5000 books from flibusta) following Room's schema.
+This old script does multi-phase collection from Flibusta OPDS (5,000+ HTTP requests).
+The new script downloads catalog.zip in ONE request (~60 MB) and parses the complete
+catalog (~1.2M books) directly. See create_seed_from_catalog.py.
 
-Usage:
-    python3 generate_seed_db.py [--output path/to/voxli_seed.db]
+Generate voxli_seed.db — a Room-compatible SQLite seed database for Voxli.
 
-The schema JSON (from Room KSP generation) must be at:
-    app/build/generated/ksp/debug/resources/schemas/com.voxli.catalog.db.VoxliDatabase/1.json
+Multi-phase collection from Flibusta OPDS:
+  Phase 1 — Author index: crawl ALL author pages (5,000+ pages, ~90,000 authors)
+  Phase 2 — New books feed: follow pagination (752+ books)
+  Phase 3 — Search queries: cover diverse genres (~2,000+ books)
+  Phase 4 — Author catalogs: fetch ALL books from as many authors as possible
 
-If schema file is not found, a minimal fallback schema is used.
-
-Reference: roadmap §14.3
+Author IDs are cached in a JSON checkpoint so re-runs can skip Phase 1.
 """
 
-import argparse
+import sqlite3
 import json
 import os
 import re
-import sqlite3
 import sys
+import time
 import urllib.request
-import urllib.error
 import xml.etree.ElementTree as ET
-from pathlib import Path
-from typing import Optional
+from urllib.parse import quote
+from html.parser import HTMLParser
 
-# Default paths
-SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_OUTPUT = SCRIPT_DIR / "app" / "src" / "main" / "assets" / "databases" / "voxli_seed.db"
-SCHEMA_PATH = Path("app/build/generated/ksp/debug/resources/schemas/com.voxli.catalog.db.VoxliDatabase/1.json")
+# ── Config ────────────────────────────────────────────────────────
+MIRRORS = ["http://flibusta.is", "http://flibusta.site", "http://flibusta.net"]
+OUTPUT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "app/src/main/assets/databases/voxli_seed.db",
+)
+CHECKPOINT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "scripts/.seed_checkpoint.json",
+)
 
-FLIBUSTA_MIRRORS = [
-    "http://flibusta.is",
-    "http://flibusta.site",
-    "http://flibusta.net",
+NEW_BOOKS_BASE = "/opds/new/{page}/new/"
+AUTHOR_INDEX_BASE = "/opds/authors"
+AUTHOR_BOOKS = "/opds/authorsequenceless/{author_id}"
+SEARCH_BOOKS = "/opds/search?searchType=books&searchTerm={query}"
+
+MAX_AUTHOR_FEEDS = 5000   # how many author catalogs to fetch
+MAX_NEW_BOOK_PAGES = 200  # safety limit
+SEARCH_DELAY = 0.3
+FAST_DELAY = 0.15
+
+SEARCH_QUERIES = [
+    "классика", "детектив", "триллер", "фантастика", "фэнтези",
+    "мистика", "ужасы", "боевик", "приключения", "вестерн",
+    "антиутопия", "киберпанк", "роман", "повесть", "рассказы",
+    "поэзия", "драма", "публицистика", "критика", "сказки",
+    "юмор", "комиксы", "стихи", "пьесы", "эссе",
+    "письма", "дневники", "очерки", "басни", "былины", "летописи",
+    "история", "биография", "мемуары", "психология", "философия",
+    "наука", "техника", "медицина", "право", "экономика",
+    "педагогика", "социология", "политология", "культурология",
+    "искусство", "музыка", "кино", "театр", "архитектура",
+    "живопись", "лингвистика", "фольклор", "религия", "эзотерика",
+    "кулинария", "спорт", "путешествия", "сад", "здоровье",
+    "домоводство", "маркетинг", "менеджмент", "бизнес", "финансы",
+    "карьера", "саморазвитие", "мотивация", "лидерство",
+    "программирование", "математика", "физика", "химия", "биология",
+    "инженерия", "искусственный интеллект", "антропология",
+    "археология", "мифология", "этнография", "география",
+    "экология", "дизайн", "фотография", "кинематограф",
+    "Толстой", "Достоевский", "Чехов", "Пушкин", "Гоголь", "Тургенев",
+    "Шекспир", "Дюма", "Верн", "Лондон", "Хемингуэй", "Оруэлл",
+    "Брэдбери", "Азимов", "Кинг", "Стругацкие", "Лем", "Пелевин",
+    "Уэллс", "Дойл", "Кристи", "Роулинг", "Толкиен",
+    "война и мир", "преступление и наказание", "мастер и маргарита",
+    "гарри поттер", "властелин колец", "дюна", "ведьмак",
+    "игра престолов", "1984", "скотный двор",
 ]
 
-# Genre names as they appear in Flibusta's /opds/genres/ page
-GENRES = [
-    "Деловая литература",
-    "Детективы и триллеры",
-    "Детская литература: прочее",
-    "Детская литература: сказки",
-    "Детская художественная литература",
-    "Документальная литература",
-    "Дом и семья",
-    "Драматургия",
-    "Искусство, Искусствоведение, Дизайн",
-    "Компьютеры и Интернет",
-    "Любовные романы",
-    "Наука, Образование",
-    "Поэзия",
-    "Приключения",
-    "Проза",
-    "Прочее",
-    "Религия, духовность, эзотерика",
-    "Справочная литература",
-    "Старинное",
-    "Техника",
-    "Учебники и пособия",
-    "Фантастика",
-    "Фольклор",
-    "Юмор",
-]
 
-# ---- Schema ----
+# ── HTML / helpers ────────────────────────────────────────────────
+class _MLStripper(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.reset()
+        self.convert_charrefs = True
+        self.text = []
+    def handle_data(self, d):
+        self.text.append(d)
+    def get_data(self):
+        return "".join(self.text)
 
-def load_schema(schema_path: Path) -> dict:
-    """Load Room schema JSON."""
-    if schema_path.exists():
-        with open(schema_path) as f:
-            return json.load(f)
-    print(f"[WARN] Schema not found at {schema_path}, using fallback", file=sys.stderr)
-    return {}
+_STRIPPER = _MLStripper()
 
-def get_create_table_ddl(schema: dict, table_name: str) -> Optional[str]:
-    """Extract CREATE TABLE DDL for a given table from Room schema."""
-    for entity in schema.get("entities", []):
-        if entity.get("tableName") == table_name or (
-            entity.get("createSql", "").upper().startswith("CREATE TABLE")
-            and table_name in entity.get("createSql", "")
-        ):
-            return entity.get("createSql")
+def strip_html(html: str) -> str:
+    _STRIPPER.text = []
+    _STRIPPER.feed(html)
+    return _STRIPPER.get_data().strip()
+
+
+# ── HTTP ──────────────────────────────────────────────────────────
+def fetch(url: str, retries: int = 3, timeout: int = 15) -> str | None:
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "Voxli/0.1 (seed-generator)",
+                "Accept": "application/atom+xml, text/html, */*",
+            })
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read().decode("utf-8", errors="replace")
+        except Exception:
+            if attempt < retries - 1:
+                time.sleep(1)
+            continue
     return None
 
-def get_create_index_ddl(schema: dict, table_name: str) -> list[str]:
-    """Extract CREATE INDEX DDL for a given table."""
-    indexes = []
-    for entity in schema.get("entities", []):
-        if entity.get("tableName") != table_name:
+
+def pick_mirror() -> str:
+    for mirror in MIRRORS:
+        try:
+            req = urllib.request.Request(f"{mirror}/", method="HEAD")
+            with urllib.request.urlopen(req, timeout=5):
+                return mirror
+        except Exception:
             continue
-        for idx in entity.get("indices", []):
-            idx_sql = idx.get("createSql")
-            if idx_sql:
-                indexes.append(idx_sql)
-    return indexes
+    return MIRRORS[0]
 
-# ---- SQL ----
 
-CREATE_BOOKS_SQL = """
-CREATE TABLE IF NOT EXISTS books (
-    id INTEGER NOT NULL PRIMARY KEY,
-    title TEXT NOT NULL DEFAULT '',
-    author TEXT NOT NULL DEFAULT '',
-    annotation TEXT NOT NULL DEFAULT '',
-    genre TEXT NOT NULL DEFAULT '',
-    series TEXT NOT NULL DEFAULT '',
-    series_num INTEGER NOT NULL DEFAULT 0,
-    lang TEXT NOT NULL DEFAULT '',
-    rating REAL NOT NULL DEFAULT 0.0,
-    votes_count INTEGER NOT NULL DEFAULT 0,
-    has_fb2 INTEGER NOT NULL DEFAULT 0,
-    has_epub INTEGER NOT NULL DEFAULT 0,
-    has_audio INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT ''
-)
-"""
+# ── OPDS parsing ──────────────────────────────────────────────────
+ATOM_NS = "http://www.w3.org/2005/Atom"
+DC_NS = "http://purl.org/dc/terms/"
+NS = {"atom": ATOM_NS, "dc": DC_NS}
 
-CREATE_HISTORY_SQL = """
-CREATE TABLE IF NOT EXISTS history (
-    book_id INTEGER NOT NULL PRIMARY KEY,
-    status TEXT NOT NULL DEFAULT 'reading',
-    char_offset INTEGER NOT NULL DEFAULT 0,
-    progress REAL NOT NULL DEFAULT 0.0,
-    playback_pos INTEGER NOT NULL DEFAULT 0,
-    started_at TEXT NOT NULL DEFAULT '',
-    finished_at TEXT DEFAULT NULL,
-    updated_at TEXT NOT NULL DEFAULT ''
-)
-"""
 
-CREATE_SETTINGS_SQL = """
-CREATE TABLE IF NOT EXISTS settings (
-    key TEXT NOT NULL PRIMARY KEY,
-    value TEXT NOT NULL DEFAULT ''
-)
-"""
+def parse_opds_entry(entry: ET.Element) -> dict | None:
+    """Parse a single OPDS <entry> into a book dict."""
+    book_id = None
+    formats: set[str] = set()
 
-CREATE_FTS5_SQL = """
-CREATE VIRTUAL TABLE IF NOT EXISTS books_fts USING fts5(
-    title, author,
-    content=books,
-    content_rowid=id,
-    tokenize='unicode61 remove_diacritics 1'
-)
-"""
-
-CREATE_FTS_TRIGGERS = [
-    """
-    CREATE TRIGGER IF NOT EXISTS books_ai AFTER INSERT ON books BEGIN
-        INSERT INTO books_fts(rowid, title, author) VALUES (new.id, new.title, new.author);
-    END
-    """,
-    """
-    CREATE TRIGGER IF NOT EXISTS books_ad AFTER DELETE ON books BEGIN
-        INSERT INTO books_fts(books_fts, rowid, title, author) VALUES ('delete', old.id, old.title, old.author);
-    END
-    """,
-    """
-    CREATE TRIGGER IF NOT EXISTS books_au AFTER UPDATE ON books BEGIN
-        INSERT INTO books_fts(books_fts, rowid, title, author) VALUES ('delete', old.id, old.title, old.author);
-        INSERT INTO books_fts(rowid, title, author) VALUES (new.id, new.title, new.author);
-    END
-    """,
-]
-
-CREATE_INDEXES = [
-    "CREATE INDEX IF NOT EXISTS index_books_title ON books(title COLLATE NOCASE)",
-    "CREATE INDEX IF NOT EXISTS index_books_author ON books(author COLLATE NOCASE)",
-    "CREATE INDEX IF NOT EXISTS index_books_genre ON books(genre)",
-    "CREATE INDEX IF NOT EXISTS index_books_rating ON books(rating)",
-    "CREATE INDEX IF NOT EXISTS index_books_has_audio ON books(has_audio)",
-]
-
-def init_db(conn: sqlite3.Connection, schema: dict):
-    """Initialize the database schema."""
-    conn.executescript(CREATE_BOOKS_SQL)
-    conn.executescript(CREATE_HISTORY_SQL)
-    conn.executescript(CREATE_SETTINGS_SQL)
-    conn.executescript(CREATE_FTS5_SQL)
-    for trigger in CREATE_FTS_TRIGGERS:
-        conn.executescript(trigger)
-    for idx in CREATE_INDEXES:
-        conn.executescript(idx)
-    conn.commit()
-
-# ---- Flibusta OPDS fetch ----
-
-def fetch_opds(url: str) -> Optional[str]:
-    """Fetch an OPDS URL."""
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36",
-            "Accept": "application/atom+xml,application/xml,text/html,*/*",
-        }
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return resp.read().decode("utf-8")
-    except Exception as e:
-        print(f"[WARN] Failed to fetch {url}: {e}", file=sys.stderr)
-        return None
-
-NS = {
-    "atom": "http://www.w3.org/2005/Atom",
-    "opds": "http://opds-spec.org/2010/catalog",
-    "dc": "http://purl.org/dc/terms/",
-}
-
-def _extract_book_id(entry: ET.Element) -> Optional[int]:
-    """Extract numeric book ID from acquisition link: /b/{id}/{format}."""
     for link in entry.findall("atom:link", NS):
         href = link.get("href", "")
-        m = re.match(r"/b/(\d+)/", href)
+        link_type = link.get("type", "")
+        m = re.match(r"/b/(\d+)(?:/|$)", href)
         if m:
-            return int(m.group(1))
-    return None
+            bid = int(m.group(1))
+            if book_id is None:
+                book_id = bid
+            if "fb2" in link_type:
+                formats.add("fb2")
+            if "epub" in link_type:
+                formats.add("epub")
 
-
-def parse_opds_entry(entry: ET.Element) -> Optional[dict]:
-    """Parse an OPDS entry into a book dict."""
-    book_id = _extract_book_id(entry)
     if book_id is None:
         return None
 
-    title = entry.findtext("atom:title", "", NS)
-    author_el = entry.find("atom:author", NS)
-    author = author_el.findtext("atom:name", "") if author_el is not None else ""
+    dc_format = entry.find("dc:format", NS)
+    if dc_format is not None and dc_format.text:
+        fmt = dc_format.text.strip().lower()
+        if "fb2" in fmt:
+            formats.add("fb2")
+        if "epub" in fmt:
+            formats.add("epub")
 
-    category = entry.find("atom:category", NS)
-    genre = category.get("term", "") if category is not None else "unknown"
+    title_el = entry.find("atom:title", NS)
+    title = title_el.text.strip() if title_el is not None and title_el.text else ""
+    if not title:
+        return None
 
-    content = entry.findtext("atom:content", "", NS)
-    published = entry.findtext("atom:published", "", NS)
-    
-    # Extract language from dc:language
-    lang = ""
+    author_el = entry.find("atom:author/atom:name", NS)
+    author = author_el.text.strip() if author_el is not None and author_el.text else ""
+
+    cat = entry.find("atom:category", NS)
+    genre = ""
+    if cat is not None:
+        genre = cat.get("label", "") or cat.get("term", "")
+
+    content_el = entry.find("atom:content", NS)
+    annotation = ""
+    if content_el is not None and content_el.text:
+        raw = content_el.text.strip()
+        ct = content_el.get("type", "text")
+        if ct == "text/html":
+            raw = strip_html(raw)
+        annotation = re.sub(
+            r"(?:Год издания|Формат|Язык|Размер|Скачиваний|Перевод).*?(?:<br/?>|\n|$)",
+            "", raw, flags=re.IGNORECASE
+        ).strip()
+
+    published_el = entry.find("atom:published", NS)
+    published = published_el.text.strip() if published_el is not None and published_el.text else ""
+    updated_el = entry.find("atom:updated", NS)
+    updated = updated_el.text.strip() if updated_el is not None and updated_el.text else ""
+
     lang_el = entry.find("dc:language", NS)
-    if lang_el is not None:
-        lang = lang_el.text or ""
-    
-    # Extract series info from content HTML
-    series = ""
-    series_num = 0
-    if content:
-        m = re.search(r'Серия:\s*([^<]+?)(?:\s+#(\d+))?\s*<', content)
-        if m:
-            series = m.group(1).strip()
-            if m.group(2):
-                series_num = int(m.group(2))
-
-    has_fb2 = False
-    has_epub = False
-    for link in entry.findall("atom:link", NS):
-        link_type = link.get("type", "")
-        if "fb2" in link_type:
-            has_fb2 = True
-        if "epub" in link_type:
-            has_epub = True
+    lang = lang_el.text.strip() if lang_el is not None and lang_el.text else "ru"
 
     return {
         "id": book_id,
-        "title": title.strip(),
-        "author": author.strip(),
+        "title": title,
+        "author": author,
+        "annotation": annotation,
         "genre": genre,
-        "annotation": content.strip(),
-        "has_fb2": 1 if has_fb2 else 0,
-        "has_epub": 1 if has_epub else 0,
-        "created_at": published,
-        "series": series,
-        "series_num": series_num,
-        "lang": lang,
+        "series": "",
+        "series_num": 0,
+        "lang": lang if lang else "ru",
         "rating": 0.0,
         "votes_count": 0,
+        "has_fb2": 1 if "fb2" in formats else 0,
+        "has_epub": 1 if "epub" in formats else 0,
         "has_audio": 0,
+        "created_at": published or updated,
     }
 
-def fetch_genre_url(genre_url: str, base_url: str, seen_ids: set, limit: int = 200) -> list[dict]:
-    """Recursively fetch books from a genre URL (follows sub-categories)."""
+
+def parse_opds_feed(xml: str) -> list[dict]:
     books = []
-    url = base_url + genre_url
-
-    # Check if this is a paginated book listing (has /{number} suffix)
-    has_page = re.search(r'/(\d+)$', genre_url)
-
-    xml = fetch_opds(url)
-    if not xml:
-        return books
-
     try:
         root = ET.fromstring(xml)
+        for entry in root.findall("atom:entry", NS):
+            book = parse_opds_entry(entry)
+            if book:
+                books.append(book)
     except ET.ParseError:
-        return books
-
-    entries = root.findall(".//atom:entry", NS)
-    if not entries:
-        return books
-
-    for entry in entries:
-        # If entry has acquisition links with fb2/epub → it's a book
-        acquisition_links = [
-            link for link in entry.findall("atom:link", NS)
-            if link.get("rel", "").startswith("http://opds-spec.org/acquisition")
-        ]
-        if acquisition_links:
-            result = parse_opds_entry(entry)
-            if result and result["id"] not in seen_ids:
-                seen_ids.add(result["id"])
-                books.append(result)
-                if len(books) >= limit:
-                    return books[:limit]
-            continue
-
-        # Otherwise it might be a sub-category link
-        sub_link = entry.find("atom:link", NS)
-        if sub_link is not None:
-            sub_href = sub_link.get("href", "")
-            if sub_href and not sub_href.startswith("http"):
-                # Follow sub-category
-                sub_books = fetch_genre_url(sub_href, base_url, seen_ids, limit - len(books))
-                books.extend(sub_books)
-
-    # Follow next page if available
-    next_link = root.find(".//atom:link[@rel='next']", NS)
-    if next_link is not None and len(books) < limit:
-        next_href = next_link.get("href", "")
-        if next_href:
-            more = fetch_genre_url(next_href, base_url, seen_ids, limit - len(books))
-            books.extend(more)
-
-    return books[:limit]
+        pass
+    return books
 
 
-def fetch_genre_books(genre_name: str, base_url: str, limit: int = 500) -> list[dict]:
-    """Fetch top books for a genre by walking the OPDS genre tree."""
-    # First, find the genre link from /opds/genres
-    xml = fetch_opds(f"{base_url}/opds/genres")
-    if not xml:
-        return []
-    try:
-        root = ET.fromstring(xml)
-    except ET.ParseError:
-        return []
+# ── Author ID collection ──────────────────────────────────────────
+def collect_all_author_ids(mirror: str) -> list[int]:
+    """Crawl ALL author index pages and return all author IDs."""
+    checkpoint_path = CHECKPOINT
+    author_ids: list[int] = []
 
-    seen_ids = set()
-    books = []
+    # Resume from checkpoint if exists
+    if os.path.exists(checkpoint_path):
+        with open(checkpoint_path) as f:
+            data = json.load(f)
+        author_ids = data.get("author_ids", [])
+        last_page = data.get("last_page", 0)
+        last_url = data.get("last_url", "")
+        print(f"  Resuming from page {last_page} ({len(author_ids)} authors collected)")
+    else:
+        last_page = 0
+        last_url = f"{mirror}{AUTHOR_INDEX_BASE}"
+        author_ids = []
 
-    for entry in root.findall(".//atom:entry", NS):
-        title = entry.findtext("atom:title", "", NS)
-        link = entry.find("atom:link", NS)
-        if link is None:
-            continue
-        href = link.get("href", "")
+    page = last_page
+    url = last_url
+    consecutive_empty = 0
 
-        # Match genre by name (contains the genre_name substring)
-        if genre_name.lower() in title.lower():
-            genre_books = fetch_genre_url(href, base_url, seen_ids, limit)
-            books.extend(genre_books)
-            if len(books) >= limit:
-                break
-
-    return books[:limit]
-
-def fetch_new_books(base_url: str, max_books: int = 5000) -> list[dict]:
-    """Fetch newest books across all categories."""
-    books = []
-    seen_ids = set()
-    offset = 0
-    page_size = 100
-
-    while len(books) < max_books:
-        url = f"{base_url}/opds/new/0/new?offset={offset}"
-        xml = fetch_opds(url)
+    while url and page < 20000 and consecutive_empty < 5:
+        xml = fetch(url, timeout=10)
         if not xml:
-            break
+            print(f"  Page {page}: fetch failed, retrying")
+            consecutive_empty += 1
+            time.sleep(1)
+            continue
 
         try:
             root = ET.fromstring(xml)
-        except ET.ParseError:
+        except ET.ParseError as e:
+            print(f"  Page {page}: XML error {e}, stopping")
             break
 
-        entries = root.findall(".//atom:entry", NS)
+        entries = root.findall("atom:entry", NS)
+
+        # Extract author IDs from tag:author:NNNNN id fields
+        new_ids = 0
+        for e in entries:
+            id_el = e.find("atom:id", NS)
+            if id_el is not None and id_el.text:
+                m = re.search(r"tag:author:(\d+)", id_el.text)
+                if m:
+                    aid = int(m.group(1))
+                    if aid not in author_ids:
+                        author_ids.append(aid)
+                        new_ids += 1
+
+        # Find next link
+        next_url = None
+        for link in root.findall("atom:link", NS):
+            if link.get("rel") == "next":
+                next_url = link.get("href")
+                if next_url and not next_url.startswith("http"):
+                    next_url = f"{mirror}{next_url}"
+                break
+
+        if page % 100 == 0:
+            print(f"  Page {page}: {len(entries)} entries, +{new_ids} new, "
+                  f"total={len(author_ids)}, next={next_url and next_url[-20:]}")
+            # Save checkpoint every 100 pages
+            os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+            with open(checkpoint_path, "w") as f:
+                json.dump({"author_ids": author_ids, "last_page": page, "last_url": url}, f)
+
         if not entries:
+            consecutive_empty += 1
+        else:
+            consecutive_empty = 0
+
+        url = next_url
+        page += 1
+        if not next_url:
+            print(f"  No next link on page {page-1}, end of index")
             break
+        time.sleep(FAST_DELAY)
 
-        for entry in entries:
-            result = parse_opds_entry(entry)
-            if result and result["id"] not in seen_ids:
-                seen_ids.add(result["id"])
-                books.append(result)
+    # Save final checkpoint
+    os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+    with open(checkpoint_path, "w") as f:
+        json.dump({"author_ids": author_ids, "last_page": page, "last_url": url or ""}, f)
 
-        offset += page_size
-        if len(entries) < page_size:
-            break
+    print(f"\n  Author index done: {len(author_ids)} unique authors, {page} pages crawled")
+    return author_ids
 
-        print(f"  New: {len(books)} books...", file=sys.stderr)
 
-    return books[:max_books]
+# ── Book collection ───────────────────────────────────────────────
+def merge_books(books: list[dict], seen: set[int], sink: list[dict]):
+    for b in books:
+        if b["id"] not in seen:
+            seen.add(b["id"])
+            if b.get("has_fb2") or b.get("has_epub"):
+                sink.append(b)
+            else:
+                pass  # skip format-less
 
-# ---- Main ----
 
-def build_seed_db(output_path: Path, max_books: int = 5000):
-    """Main seed DB generation."""
-    print(f"Generating seed DB: {output_path}", file=sys.stderr)
-    print(f"Max books: {max_books}", file=sys.stderr)
+def fetch_feed(url: str, label: str, seen: set[int], sink: list[dict],
+               delay: float = SEARCH_DELAY) -> int:
+    xml = fetch(url)
+    if not xml:
+        return 0
+    books = parse_opds_feed(xml)
+    before = len(sink)
+    merge_books(books, seen, sink)
+    new_count = len(sink) - before
+    if new_count > 0:
+        print(f"  {label}: +{new_count} books", flush=True)
+    return new_count
 
-    # Find working mirror
-    base_url = None
-    for mirror in FLIBUSTA_MIRRORS:
-        if fetch_opds(mirror + "/opds/"):
-            base_url = mirror
-            print(f"Using mirror: {base_url}", file=sys.stderr)
-            break
 
-    if not base_url:
-        print("[ERROR] No flibusta mirror available", file=sys.stderr)
-        return 1
-
-    # Remove old DB
-    if output_path.exists():
-        output_path.unlink()
-
-    # Connect
-    conn = sqlite3.connect(str(output_path))
-    conn.execute("PRAGMA journal_mode=WAL")
+def create_db(books: list[dict]) -> int:
+    """Create the SQLite database. Returns book count."""
+    if os.path.exists(OUTPUT):
+        os.remove(OUTPUT)
+    conn = sqlite3.connect(OUTPUT)
+    conn.execute("PRAGMA journal_mode=OFF")
     conn.execute("PRAGMA synchronous=OFF")
 
-    # Create schema
-    schema = load_schema(SCHEMA_PATH)
-    init_db(conn, schema)
-    print("Schema created", file=sys.stderr)
+    conn.execute("""CREATE TABLE IF NOT EXISTS books (
+        id INTEGER NOT NULL PRIMARY KEY,
+        title TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '',
+        annotation TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
+        series TEXT NOT NULL DEFAULT '', series_num INTEGER NOT NULL DEFAULT 0,
+        lang TEXT NOT NULL DEFAULT '', rating REAL NOT NULL DEFAULT 0.0,
+        votes_count INTEGER NOT NULL DEFAULT 0,
+        has_fb2 INTEGER NOT NULL DEFAULT 0, has_epub INTEGER NOT NULL DEFAULT 0,
+        has_audio INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT ''
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS history (
+        book_id INTEGER NOT NULL PRIMARY KEY, status TEXT NOT NULL DEFAULT 'reading',
+        char_offset INTEGER NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0.0,
+        playback_pos INTEGER NOT NULL DEFAULT 0, started_at TEXT NOT NULL DEFAULT '',
+        finished_at TEXT DEFAULT NULL, updated_at TEXT NOT NULL DEFAULT ''
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS settings (
+        key TEXT NOT NULL PRIMARY KEY, value TEXT NOT NULL DEFAULT ''
+    )""")
+    conn.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS books_fts USING fts5(
+        title, author, content=books, content_rowid=id,
+        tokenize='unicode61 remove_diacritics 1'
+    )""")
 
-    # Fetch books from each genre
-    all_books = []
-    seen_ids = set()
-    per_genre = max(1, max_books // len(GENRES))
+    for idx in [
+        "CREATE INDEX IF NOT EXISTS idx_books_author ON books(author COLLATE NOCASE)",
+        "CREATE INDEX IF NOT EXISTS idx_books_genre ON books(genre)",
+        "CREATE INDEX IF NOT EXISTS idx_books_rating ON books(rating)",
+        "CREATE INDEX IF NOT EXISTS idx_books_title ON books(title COLLATE NOCASE)",
+    ]:
+        conn.execute(idx)
 
-    for genre in GENRES:
-        genre_books = fetch_genre_books(genre, base_url, limit=per_genre)
-        for book in genre_books:
-            if book["id"] not in seen_ids:
-                seen_ids.add(book["id"])
-                all_books.append(book)
-        print(f"  {genre}: {len(genre_books)} books", file=sys.stderr)
+    for trig in [
+        "CREATE TRIGGER IF NOT EXISTS books_ai AFTER INSERT ON books BEGIN "
+        "INSERT INTO books_fts(rowid, title, author) VALUES (new.id, new.title, new.author); END",
+        "CREATE TRIGGER IF NOT EXISTS books_ad AFTER DELETE ON books BEGIN "
+        "INSERT INTO books_fts(books_fts, rowid, title, author) VALUES ('delete', old.id, old.title, old.author); END",
+        "CREATE TRIGGER IF NOT EXISTS books_au AFTER UPDATE ON books BEGIN "
+        "INSERT INTO books_fts(books_fts, rowid, title, author) VALUES ('delete', old.id, old.title, old.author); "
+        "INSERT INTO books_fts(rowid, title, author) VALUES (new.id, new.title, new.author); END",
+    ]:
+        conn.execute(trig)
 
-    # Also fetch new books for coverage
-    new_books = fetch_new_books(base_url, max_books)
-    for book in new_books:
-        if book["id"] not in seen_ids:
-            seen_ids.add(book["id"])
-            all_books.append(book)
-
-    print(f"Total unique books: {len(all_books)}", file=sys.stderr)
-
-    # Sort by id, keep top max_books
-    all_books.sort(key=lambda b: b["rating"], reverse=True)
-    all_books = all_books[:max_books]
-
-    # Insert into DB
-    cursor = conn.cursor()
-    insert_sql = """
-        INSERT OR REPLACE INTO books
-            (id, title, author, annotation, genre, series, series_num, lang,
-             rating, votes_count, has_fb2, has_epub, has_audio, created_at)
-        VALUES
-            (:id, :title, :author, :annotation, :genre, :series, :series_num, :lang,
-             :rating, :votes_count, :has_fb2, :has_epub, :has_audio, :created_at)
-    """
-
-    for book in all_books:
-        cursor.execute(insert_sql, book)
+    inserted = 0
+    for book in books:
+        try:
+            conn.execute(
+                """INSERT INTO books (id, title, author, annotation, genre, series, series_num,
+                   lang, rating, votes_count, has_fb2, has_epub, has_audio, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (book["id"], book["title"], book["author"], book["annotation"],
+                 book["genre"], book["series"], book["series_num"],
+                 book["lang"], book["rating"], book["votes_count"],
+                 book["has_fb2"], book["has_epub"], book["has_audio"],
+                 book["created_at"]),
+            )
+            inserted += 1
+        except sqlite3.IntegrityError:
+            pass
     conn.commit()
-
-    print(f"Inserted {len(all_books)} books", file=sys.stderr)
-
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.execute("PRAGMA user_version = 1")
     conn.commit()
+    conn.close()
+    return inserted
 
-    # FTS5 rebuild
-    conn.execute("INSERT INTO books_fts(books_fts) VALUES ('rebuild')")
-    conn.commit()
 
-    # Vacuum
-    conn.execute("VACUUM")
+# ── Main ──────────────────────────────────────────────────────────
+def main():
+    t0 = time.time()
+    print("=" * 60)
+    print("  Voxli Seed DB Generator v3 — ALL BOOKS")
+    print("=" * 60)
+
+    mirror = pick_mirror()
+    print(f"  Mirror: {mirror}")
+    seen: set[int] = set()
+    all_books: list[dict] = []
+
+    # ── Phase 1: Collect all author IDs ──
+    print("\n─── Phase 1: Author index crawl ───")
+    t1 = time.time()
+    author_ids = collect_all_author_ids(mirror)
+    t_phase1 = time.time() - t1
+    print(f"  Time: {t_phase1:.0f}s")
+
+    # ── Phase 2: New books feed ──
+    print("\n─── Phase 2: New books feed ───")
+    t2 = time.time()
+    for page in range(1, MAX_NEW_BOOK_PAGES + 1):
+        url = f"{mirror}{NEW_BOOKS_BASE.format(page=page)}"
+        xml = fetch(url, timeout=10)
+        if not xml:
+            break
+        books = parse_opds_feed(xml)
+        if not books:
+            break
+        merge_books(books, seen, all_books)
+        if page % 10 == 0:
+            print(f"  page {page}: {len(all_books)} total books", flush=True)
+        time.sleep(SEARCH_DELAY)
+    t_phase2 = time.time() - t2
+    print(f"  New books done: {len(all_books)} books ({t_phase2:.0f}s)")
+
+    # ── Phase 3: Search queries ──
+    print(f"\n─── Phase 3: Search ({len(SEARCH_QUERIES)} queries) ───")
+    t3 = time.time()
+    for i, query in enumerate(SEARCH_QUERIES):
+        url = f"{mirror}{SEARCH_BOOKS.format(query=quote(query))}"
+        label = f"search[{i+1}/{len(SEARCH_QUERIES)}]"
+        fetch_feed(url, label, seen, all_books, delay=0)
+        time.sleep(SEARCH_DELAY)
+    t_phase3 = time.time() - t3
+    print(f"  Search done: {len(all_books)} books ({t_phase3:.0f}s)")
+
+    # ── Phase 4: Author catalogs ──
+    n_authors = min(len(author_ids), MAX_AUTHOR_FEEDS)
+    print(f"\n─── Phase 4: Author catalogs ({n_authors} of {len(author_ids)} authors) ───")
+    t4 = time.time()
+    crawled = 0
+    for aid in author_ids:
+        if crawled >= MAX_AUTHOR_FEEDS:
+            print(f"  Reached {MAX_AUTHOR_FEEDS} author limit")
+            break
+        url = f"{mirror}{AUTHOR_BOOKS.format(author_id=aid)}"
+        label = f"author {aid}"
+        n = fetch_feed(url, label, seen, all_books, delay=0)
+        crawled += 1
+        if crawled % 100 == 0:
+            elapsed = time.time() - t4
+            rate = crawled / (elapsed / 60)
+            print(f"  [{crawled}/{n_authors}] {len(all_books)} books, "
+                  f"{elapsed:.0f}s ({rate:.0f} authors/min)", flush=True)
+        time.sleep(FAST_DELAY)
+    t_phase4 = time.time() - t4
+    print(f"  Author catalogs done: {len(all_books)} books ({t_phase4:.0f}s)")
+
+    # ── Create DB ──
+    print(f"\n─── Creating database ({len(all_books)} books) ───")
+    t5 = time.time()
+    inserted = create_db(all_books)
+    t_db = time.time() - t5
+    total_time = time.time() - t0
+
+    # Verify
+    conn = sqlite3.connect(OUTPUT)
+    count = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
+    genres = conn.execute("SELECT COUNT(DISTINCT genre) FROM books WHERE genre != ''").fetchone()[0]
+    fb2 = conn.execute("SELECT COUNT(*) FROM books WHERE has_fb2 = 1").fetchone()[0]
+    epub = conn.execute("SELECT COUNT(*) FROM books WHERE has_epub = 1").fetchone()[0]
+    fts = conn.execute("SELECT COUNT(*) FROM books_fts").fetchone()[0]
     conn.close()
 
-    size_mb = output_path.stat().st_size / (1024 * 1024)
-    print(f"Done: {output_path} ({size_mb:.1f} MB)", file=sys.stderr)
-    return 0
+    size = os.path.getsize(OUTPUT)
+    print(f"\n  {'=' * 56}")
+    print(f"  ✅  DATABASE CREATED")
+    print(f"  {'=' * 56}")
+    print(f"     Books:        {count}")
+    print(f"     Authors:      {len(author_ids)} in index, {n_authors} crawled")
+    print(f"     Genres:       {genres}")
+    print(f"     Has FB2:      {fb2}")
+    print(f"     Has EPUB:     {epub}")
+    print(f"     FTS entries:  {fts}")
+    print(f"     Size:         {size:,} bytes ({size/1024/1024:.1f} MB)")
+    print(f"  {'─' * 56}")
+    print(f"     Phase 1 (index): {t_phase1:.0f}s")
+    print(f"     Phase 2 (new):   {t_phase2:.0f}s")
+    print(f"     Phase 3 (search):{t_phase3:.0f}s")
+    print(f"     Phase 4 (authors):{t_phase4:.0f}s")
+    print(f"     DB creation:     {t_db:.0f}s")
+    print(f"     Total:           {total_time:.0f}s")
+    print(f"  {'=' * 56}")
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate Voxli seed database")
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT,
-                       help="Output path for voxli_seed.db")
-    parser.add_argument("--max-books", type=int, default=5000,
-                       help="Maximum number of books (default: 5000)")
-    args = parser.parse_args()
-
-    # Create output directory
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-
-    sys.exit(build_seed_db(args.output, args.max_books))
+    main()

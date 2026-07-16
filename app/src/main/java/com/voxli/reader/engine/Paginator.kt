@@ -1,8 +1,5 @@
 package com.voxli.reader.engine
 
-import android.text.Layout
-import android.text.StaticLayout
-import android.text.TextPaint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -13,20 +10,23 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 /**
- * Paginator — splits formatted text into pages using StaticLayout (thread-safe).
+ * Paginator — splits formatted text into pages using a TextMeasurer.
  *
- * Reference: roadmap §7.5 — thread-safe measurement with StaticLayout + TextPaint.
+ * Pure Kotlin, no Android SDK dependencies. All text measurement is delegated to
+ * a [TextMeasurer] implementation (e.g. AndroidTextMeasurer).
+ *
+ * Reference: roadmap §7.5 — thread-safe paginator.
  *
  * @param document parsed book document
  * @param pageWidthPx viewport width in pixels
  * @param pageHeightPx viewport height in pixels (excluding progress bar)
- * @param textPaint pre-configured TextPaint from TextStyle + Density
+ * @param textMeasurer text measurement engine (injected)
  */
 class Paginator(
     private val document: DocumentModel,
     private val pageWidthPx: Int,
     private val pageHeightPx: Int,
-    private val textPaint: TextPaint,
+    private val textMeasurer: TextMeasurer,
 ) {
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val pageCache = mutableMapOf<Int, Page>()
@@ -40,65 +40,52 @@ class Paginator(
     private val _pagesReady = MutableStateFlow(false)
     val pagesReady: StateFlow<Boolean> = _pagesReady.asStateFlow()
 
-    // Pre-calculated layout for each paragraph
-    private val paragraphLayouts: List<ParagraphLayout> by lazy {
-        document.paragraphs.map { block ->
-            val layout = StaticLayout.Builder.obtain(
-                block.text, 0, block.text.length,
-                textPaint, pageWidthPx
-            )
-                .setLineSpacing(0f, 1.0f)
-                .setBreakStrategy(Layout.BREAK_STRATEGY_SIMPLE)
-                .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
-                .build()
-
-            ParagraphLayout(block, layout)
-        }
+    // Pre-calculated layout for each paragraph (lazy, first access triggers measurement)
+    private val paragraphLayouts: List<MeasuredParagraph> by lazy {
+        textMeasurer.measureParagraphs(document.paragraphs, pageWidthPx)
     }
 
     /** Total lines across all paragraphs. */
     private val totalLines: Int by lazy {
-        paragraphLayouts.sumOf { it.layout.lineCount }
+        paragraphLayouts.sumOf { it.lines.size }
+    }
+
+    private val lineHeightPx: Int by lazy {
+        textMeasurer.getLineHeightPx()
     }
 
     /**
      * Calculate all page breaks. Runs in background, updates state flows.
      */
     fun calculatePages() {
+        // Force lazy initialization on the calling thread (may be background, not main)
+        val layouts = paragraphLayouts
+        val lh = lineHeightPx
         scope.launch {
             val pages = mutableListOf<Page>()
             var currentPageLines = mutableListOf<PageLine>()
             var linesOnPage = 0
-            var pageCharStart = 0
-            var pageCharEnd = 0
 
             // Calculate max lines per page
-            val lineHeight = getLineHeight()
-            val maxLinesPerPage = if (lineHeight > 0) pageHeightPx / lineHeight else Int.MAX_VALUE
+            val maxLinesPerPage = if (lineHeightPx > 0) pageHeightPx / lineHeightPx else Int.MAX_VALUE
             val safeMaxLines = maxOf(1, maxLinesPerPage - 1)  // leave 1 line margin
 
             var globalLineIndex = 0
 
-            for ((paraIndex, pl) in paragraphLayouts.withIndex()) {
-                val paraLineCount = pl.layout.lineCount
-
-                for (lineInPara in 0 until paraLineCount) {
-                    val lineStart = pl.layout.getLineStart(lineInPara)
-                    val lineEnd = pl.layout.getLineEnd(lineInPara)
-                    val lineText = pl.block.text.substring(lineStart, lineEnd)
-
+            for ((paraIndex, mp) in paragraphLayouts.withIndex()) {
+                for ((lineInPara, line) in mp.lines.withIndex()) {
                     currentPageLines.add(
                         PageLine(
                             paragraphIndex = paraIndex,
                             lineInParagraph = lineInPara,
-                            text = lineText,
-                            charStartInBlock = lineStart,
-                            charEndInBlock = lineEnd,
-                            globalCharStart = pl.block.globalCharStart + lineStart,
-                            globalCharEnd = pl.block.globalCharStart + lineEnd,
-                            isBold = pl.block.isBold,
-                            isItalic = pl.block.isItalic,
-                            isHeader = pl.block.isHeader,
+                            text = line.text,
+                            charStartInBlock = line.charStartInBlock,
+                            charEndInBlock = line.charEndInBlock,
+                            globalCharStart = mp.block.globalCharStart + line.charStartInBlock,
+                            globalCharEnd = mp.block.globalCharStart + line.charEndInBlock,
+                            isBold = mp.block.isBold,
+                            isItalic = mp.block.isItalic,
+                            isHeader = mp.block.isHeader,
                         )
                     )
                     linesOnPage++
@@ -183,25 +170,12 @@ class Paginator(
         scope.cancel()
     }
 
-    private fun getLineHeight(): Int {
-        val paint = textPaint
-        val fm = paint.fontMetricsInt
-        return fm.descent - fm.ascent + 4  // +4 for line spacing
-    }
-
     /** Rebuild with new dimensions (e.g., on font change or rotation). */
-    fun rebuild(newWidthPx: Int, newHeightPx: Int, newTextPaint: TextPaint): Paginator {
+    fun rebuild(newWidthPx: Int, newHeightPx: Int, newTextMeasurer: TextMeasurer): Paginator {
         cancel()
-        // Note: TextPaint is immutable in this context
-        return Paginator(document, newWidthPx, newHeightPx, newTextPaint)
+        return Paginator(document, newWidthPx, newHeightPx, newTextMeasurer)
     }
 }
-
-/** Pre-computed layout for a single paragraph. */
-data class ParagraphLayout(
-    val block: ParagraphBlock,
-    val layout: StaticLayout,
-)
 
 /** A single line of text within a page. */
 data class PageLine(

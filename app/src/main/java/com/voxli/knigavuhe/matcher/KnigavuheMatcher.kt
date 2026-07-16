@@ -62,7 +62,12 @@ class KnigavuheMatcher(
                 .get()
                 .build()
             val response = client.newCall(request).execute()
-            if (response.isSuccessful) response.body?.string() else null
+            if (response.isSuccessful) {
+                response.body?.string()
+            } else {
+                response.close()
+                null
+            }
         } catch (_: Exception) {
             null
         }
@@ -132,6 +137,7 @@ class KnigavuheMatcher(
             val tracks = extractTracksForReader(audioFilesJson, readerId)
 
             NarratorInfo(
+                readerId = readerId.toLongOrNull() ?: 0L,
                 name = name,
                 durationSeconds = durationSec,
                 tracks = tracks,
@@ -189,6 +195,7 @@ class KnigavuheMatcher(
 }
 
 data class NarratorInfo(
+    val readerId: Long = 0L,
     val name: String,
     val durationSeconds: Long,
     val tracks: List<TrackInfo> = emptyList(),

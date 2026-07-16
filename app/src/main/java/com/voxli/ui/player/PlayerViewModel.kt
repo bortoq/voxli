@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.voxli.audio.engine.AudioDownloader
 import com.voxli.audio.engine.AudioPlaybackService
+import com.voxli.catalog.db.BookDao
 import com.voxli.catalog.db.HistoryDao
 import com.voxli.catalog.db.HistoryEntity
 import com.voxli.knigavuhe.matcher.KnigavuheMatcher
@@ -16,6 +17,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -27,6 +29,7 @@ import java.util.Locale
  */
 class PlayerViewModel(
     application: Application,
+    private val bookDao: BookDao,
     private val matcher: KnigavuheMatcher,
     private val downloader: AudioDownloader,
     private val historyDao: HistoryDao,
@@ -76,7 +79,40 @@ class PlayerViewModel(
     private var isPolling = false
 
     /**
-     * Load audiobook data for a book.
+     * Load audiobook by book ID and reader ID from knigavuhe.
+     * Looks up book metadata and narrator info asynchronously.
+     */
+    fun loadBook(bookId: Long, readerId: Long) {
+        if (_isLoading.value) return
+        viewModelScope.launch {
+            _isLoading.value = true
+            try {
+                val book = bookDao.getBookById(bookId)
+                if (book == null) {
+                    _bookTitle.value = "Книга не найдена"
+                    _isLoading.value = false
+                    return@launch
+                }
+                _bookTitle.value = book.title
+                _bookAuthor.value = book.author
+
+                val narrators = matcher.fetchNarrators(book.id, book.title, book.author)
+                val narrator = narrators.find { it.readerId == readerId } ?: narrators.firstOrNull()
+                if (narrator == null) {
+                    _narratorName.value = "Чтец не найден"
+                    _isLoading.value = false
+                    return@launch
+                }
+                loadBook(bookId, book.title, book.author, narrator)
+            } catch (e: Exception) {
+                _bookTitle.value = "Ошибка загрузки"
+            }
+            _isLoading.value = false
+        }
+    }
+
+    /**
+     * Load audiobook data for a book with pre-fetched narrator info.
      */
     fun loadBook(bookId: Long, bookTitle: String, bookAuthor: String, narratorInfo: NarratorInfo) {
         this.bookId = bookId
@@ -240,8 +276,7 @@ class PlayerViewModel(
     }
 
     private fun saveProgressSync() {
-        val svc = playbackService ?: return
-        viewModelScope.launch {
+        runBlocking {
             saveProgress()
         }
     }

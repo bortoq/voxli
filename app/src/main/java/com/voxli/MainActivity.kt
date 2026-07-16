@@ -42,10 +42,10 @@ object Routes {
     const val GENRE_FILTER = "genre_filter"
     const val HISTORY = "history"
     const val READER = "reader/{bookId}/{filePath}"
-    const val PLAYER = "player/{bookId}/{narratorIndex}"
+    const val PLAYER = "player/{bookId}/{readerId}"
 
     fun reader(bookId: Long, filePath: String) = "reader/$bookId/$filePath"
-    fun player(bookId: Long, narratorIndex: Int) = "player/$bookId/$narratorIndex"
+    fun player(bookId: Long, readerId: Long) = "player/$bookId/$readerId"
 }
 
 @Composable
@@ -74,6 +74,12 @@ fun VoxliNavigation() {
                 onFilterClick = {
                     navController.navigate(Routes.GENRE_FILTER)
                 },
+                onReadBook = { bookId ->
+                    navController.navigate(Routes.reader(bookId, ""))
+                },
+                onPlayBook = { bookId, readerId ->
+                    navController.navigate(Routes.player(bookId, readerId))
+                },
             )
         }
 
@@ -87,6 +93,8 @@ fun VoxliNavigation() {
                 allGenres = allGenres,
                 selectedGenres = selectedGenres,
                 onGenreToggle = { libViewModel.toggleGenre(it) },
+                onSelectAll = { libViewModel.selectAllGenres() },
+                onDeselectAll = { libViewModel.deselectAllGenres() },
                 onDone = { navController.popBackStack() },
             )
         }
@@ -125,6 +133,10 @@ fun VoxliNavigation() {
 
             // Load book when entering screen
             LaunchedEffect(bookId) {
+                if (bookId == 0L) {
+                    viewModel.setError("ID книги не указан")
+                    return@LaunchedEffect
+                }
                 viewModel.loadBook(bookId)
             }
 
@@ -146,6 +158,9 @@ fun VoxliNavigation() {
                     )
                 }
             } else {
+                val bgColor by viewModel.readerBgColor.collectAsState()
+                val textColor by viewModel.readerTextColor.collectAsState()
+                val fontSize by viewModel.readerFontSize.collectAsState()
                 ReaderScreen(
                     currentPage = currentPage,
                     currentPageIndex = currentPageIndex,
@@ -156,7 +171,7 @@ fun VoxliNavigation() {
                     ttsSpeed = 1.0f,
                     onTapZone1 = { navController.popBackStack() },
                     onTapZone2 = { viewModel.prevPage() },
-                    onTapZone3 = { viewModel.toggleTts() },
+                    onTapZone3 = { navController.navigate(Routes.player(bookId, 0L)) },
                     onTapZone4 = { viewModel.nextPage() },
                     onTapZone5 = { /* reserved */ },
                     onProgressBarTap = { viewModel.cycleSettings() },
@@ -164,6 +179,9 @@ fun VoxliNavigation() {
                     onSettingsRight = { viewModel.settingsRight() },
                     onSettingsUp = { viewModel.settingsUp() },
                     onSettingsDown = { viewModel.settingsDown() },
+                    bgColor = bgColor,
+                    textColor = textColor,
+                    fontSize = fontSize,
                 )
             }
         }
@@ -173,9 +191,11 @@ fun VoxliNavigation() {
             route = Routes.PLAYER,
             arguments = listOf(
                 navArgument("bookId") { type = NavType.LongType },
-                navArgument("narratorIndex") { type = NavType.IntType },
+                navArgument("readerId") { type = NavType.LongType },
             ),
-        ) {
+        ) { backStackEntry ->
+            val bookId = backStackEntry.arguments?.getLong("bookId") ?: 0L
+            val readerId = backStackEntry.arguments?.getLong("readerId") ?: 0L
             val viewModel: PlayerViewModel = koinViewModel()
             val bookTitle by viewModel.bookTitle.collectAsState()
             val bookAuthor by viewModel.bookAuthor.collectAsState()
@@ -186,6 +206,10 @@ fun VoxliNavigation() {
             val currentPositionMs by viewModel.currentPositionMs.collectAsState()
             val totalDurationMs by viewModel.totalDurationMs.collectAsState()
             val playbackSpeed by viewModel.playbackSpeed.collectAsState()
+
+            LaunchedEffect(bookId, readerId) {
+                viewModel.loadBook(bookId, readerId)
+            }
 
             PlayerScreen(
                 bookTitle = bookTitle,
@@ -204,6 +228,7 @@ fun VoxliNavigation() {
                 onSeek = { viewModel.seekTo(it) },
                 onSpeedChange = { viewModel.setSpeed(it) },
                 onTrackSelect = { viewModel.selectTrack(it) },
+                onTapReader = { navController.popBackStack() },
             )
         }
     }

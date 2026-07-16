@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"
+      xmlns:dc="http://purl.org/dc/terms/"
+      xmlns:os="http://a9.com/-/spec/opensearch/1.1/"
+      xmlns:opds="http://opds-spec.org/2010/catalog">
+  <id>urn:flibusta:new</id>
+  <title>Flibusta new books</title>
+  <updated>2025-12-01T10:00:00Z</updated>
+
+  <entry>
+    <id>urn:flibusta:100500</id>
+    <title>Война и мир</title>
+    <author><name>Лев Толстой</name></author>
+    <content type="text">Роман-эпопея о жизни русского общества.</content>
+    <category term="prose" label="Проза"/>
+    <link href="/b/100500/fb2" rel="http://opds-spec.org/acquisition" type="application/fb2+zip"/>
+    <link href="/b/100500/epub" rel="http://opds-spec.org/acquisition" type="application/epub+zip"/>
+    <published>2025-11-15T12:00:00Z</published>
+    <updated>2025-11-15T12:30:00Z</updated>
+  </entry>
+
+  <entry>
+    <id>urn:flibusta:100501</id>
+    <title>Преступление и наказание</title>
+    <author><name>Фёдор Достоевский</name></author>
+    <content type="text">Классический роман.</content>
+    <category term="detective" label="Детектив"/>
+    <link href="/b/100501/fb2" rel="http://opds-spec.org/acquisition" type="application/fb2+zip"/>
+    <published>2025-11-10T08:00:00Z</published>
+    <updated>2025-11-10T08:00:00Z</updated>
+  </entry>
+
+  <entry>
+    <id>urn:flibusta:100502</id>
+    <title>Анна Каренина</title>
+    <author><name>Лев Толстой</name></author>
+    <content type="text">Роман о трагической любви.</content>
+    <category term="prose" label="Проза"/>
+    <link href="/b/100502/epub" rel="http://opds-spec.org/acquisition" type="application/epub+zip"/>
+    <published>2025-10-20T14:00:00Z</published>
+    <updated>2025-10-20T14:00:00Z</updated>
+  </entry>
+</feed>

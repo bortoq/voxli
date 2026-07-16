@@ -31,7 +31,7 @@ enum class ReaderMode { READING, TTS, SETTINGS }
 
 // Settings step for the cycle
 enum class SettingsStep {
-    BG_COLOR, TEXT_COLOR, FONT_SIZE, FONT_FACE, DONE
+    BG_COLOR, TEXT_COLOR, FONT
 }
 
 @Composable
@@ -103,27 +103,34 @@ fun ReaderScreen(
                 .align(Alignment.CenterStart)
                 .offset(y = topZoneHeight),
         ) {
-            if (readerMode == ReaderMode.SETTINGS && currentPage == null) {
-                // Show settings UI
-                SettingsContent(
-                    settingsStep = settingsStep,
-                    onLeft = onSettingsLeft,
-                    onRight = onSettingsRight,
-                    onUp = onSettingsUp,
-                    onDown = onSettingsDown,
-                    textColor = textColor,
-                )
-            } else {
-                // Page content — scrollable
-                PageContent(
-                    page = currentPage,
-                    textColor = textColor,
-                    fontSize = fontSize,
+            // Settings overlay — shown on top of page content when in SETTINGS mode
+            if (readerMode == ReaderMode.SETTINGS) {
+                Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .clickable(enabled = false) { /* handled by zones */ },
-                )
+                        .background(bgColor.copy(alpha = 0.85f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    SettingsContent(
+                        settingsStep = settingsStep,
+                        onLeft = onSettingsLeft,
+                        onRight = onSettingsRight,
+                        onUp = onSettingsUp,
+                        onDown = onSettingsDown,
+                        textColor = textColor,
+                    )
+                }
             }
+
+            // Page content — always visible (under settings overlay when SETTINGS mode)
+            PageContent(
+                page = currentPage,
+                textColor = textColor,
+                fontSize = fontSize,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(enabled = false) { /* handled by zones */ },
+            )
 
             // ---- Zone 2: Left (◄) ----
             Box(
@@ -217,8 +224,9 @@ fun ReaderScreen(
                     textAlign = TextAlign.Center,
                 )
             } else {
+                val pct = if (totalPages > 0) " ${(currentPageIndex * 100 / totalPages)}%" else ""
                 Text(
-                    text = "$currentPageIndex / $totalPages",
+                    text = "[≡≡]$pct",
                     color = textColor.copy(alpha = 0.5f),
                     fontSize = MaterialTheme.typography.bodySmall.fontSize,
                     modifier = Modifier.fillMaxWidth().padding(end = 8.dp),
@@ -303,9 +311,7 @@ private fun SettingsContent(
 }
 
 private fun settingsStepLabel(step: SettingsStep): String = when (step) {
-    SettingsStep.BG_COLOR -> "Фон: ◄►цвет ▲▼ярк"
-    SettingsStep.TEXT_COLOR -> "Текст: ◄►цвет ▲▼ярк"
-    SettingsStep.FONT_SIZE -> "Шрифт: ◄►гарн ▲▼разм"
-    SettingsStep.FONT_FACE -> "Гарнитура: ◄►выбор"
-    SettingsStep.DONE -> "➤ Чтение"
+    SettingsStep.BG_COLOR -> "[≡≡] Фон: цвет ярк"
+    SettingsStep.TEXT_COLOR -> "[≡≡] Текст: цв ярк"
+    SettingsStep.FONT -> "[≡≡] Шрифт: гарн разм"
 }

@@ -49,7 +49,7 @@ class Mp3CacheCleaner(
         val freeBytes = audioDir.freeSpace
         if (freeBytes >= MIN_FREE_BYTES) return  // enough space
 
-        val cutoff = System.currentTimeMillis() - MAX_AGE_DAYS * 24 * 60 * 60 * 1000
+        val cutoff = System.currentTimeMillis() - MAX_AGE_DAYS.toLong() * 24 * 60 * 60 * 1000
 
         audioDir.listFiles()
             ?.filter { it.name.endsWith(".mp3") }

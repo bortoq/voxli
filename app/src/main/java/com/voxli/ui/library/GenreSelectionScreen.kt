@@ -18,17 +18,14 @@ fun GenreSelectionScreen(
     allGenres: List<String>,
     selectedGenres: Set<String>,
     onGenreToggle: (String) -> Unit,
+    onSelectAll: () -> Unit,
+    onDeselectAll: () -> Unit,
     onDone: () -> Unit,
 ) {
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Фильтр жанров") },
-                actions = {
-                    TextButton(onClick = onDone) {
-                        Text("Готово")
-                    }
-                }
             )
         }
     ) { padding ->
@@ -80,20 +77,10 @@ fun GenreSelectionScreen(
                     .padding(16.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
             ) {
-                OutlinedButton(onClick = {
-                    // Select all
-                    allGenres.forEach { genre ->
-                        if (genre !in selectedGenres) onGenreToggle(genre)
-                    }
-                }) {
+                OutlinedButton(onClick = onSelectAll) {
                     Text("Выбрать всё")
                 }
-                OutlinedButton(onClick = {
-                    // Deselect all
-                    allGenres.forEach { genre ->
-                        if (genre in selectedGenres) onGenreToggle(genre)
-                    }
-                }) {
+                OutlinedButton(onClick = onDeselectAll) {
                     Text("Сбросить")
                 }
                 Button(onClick = onDone) {

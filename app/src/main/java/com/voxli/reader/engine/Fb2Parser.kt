@@ -23,21 +23,29 @@ class Fb2Parser : BookParser {
         var currentTitle = ""
         var currentAuthor = ""
 
+        // Read content and sanitize broken HTML entities that crash XmlPullParser
+        val rawText = file.bufferedReader().use { it.readText() }
+        val sanitized = sanitizeEntities(rawText)
+
         val factory = XmlPullParserFactory.newInstance()
         factory.isNamespaceAware = true
-        val parser = factory.newPullParser()
 
-        file.inputStream().use { stream ->
+        sanitized.byteInputStream(Charsets.UTF_8).use { stream ->
+            val parser = factory.newPullParser()
             parser.setInput(stream, "UTF-8")
             val result = parseFb2(parser, paragraphs, charOffset)
             currentTitle = result.title
             charOffset = result.totalChars
         }
 
-        // Re-read to extract title and author properly
-        val (docTitle, docAuthor) = extractMeta(file)
-        if (docTitle.isNotEmpty()) currentTitle = docTitle
-        if (docAuthor.isNotEmpty()) currentAuthor = docAuthor
+        // Re-read to extract title and author properly (from sanitized content)
+        sanitized.byteInputStream(Charsets.UTF_8).use { stream ->
+            val parser = factory.newPullParser()
+            parser.setInput(stream, "UTF-8")
+            val (docTitle, docAuthor) = extractMeta(parser)
+            if (docTitle.isNotEmpty()) currentTitle = docTitle
+            if (docAuthor.isNotEmpty()) currentAuthor = docAuthor
+        }
 
         return DocumentModel(
             bookId = bookId,
@@ -46,6 +54,15 @@ class Fb2Parser : BookParser {
             paragraphs = paragraphs,
             totalChars = paragraphs.lastOrNull()?.globalCharEnd ?: 0,
         )
+    }
+
+    /**
+     * Replace unterminated / unknown HTML entities so XmlPullParser doesn't crash.
+     * Converts any `&` that is NOT part of a valid XML entity into `&amp;`.
+     * Valid entities: &amp; &lt; &gt; &quot; &apos; &#123; &#xABC;
+     */
+    private fun sanitizeEntities(input: String): String {
+        return input.replace(Regex("&(?!(?:amp;|lt;|gt;|quot;|apos;|#\\d+;|#x[0-9a-fA-F]+;))")) { "&amp;" }
     }
 
     private data class ParseResult(
@@ -255,36 +272,31 @@ class Fb2Parser : BookParser {
         return startOffset + 1
     }
 
-    private fun extractMeta(file: java.io.File): Pair<String, String> {
+    private fun extractMeta(parser: XmlPullParser): Pair<String, String> {
         var title = ""
         var author = ""
         try {
-            val factory = XmlPullParserFactory.newInstance()
-            val parser = factory.newPullParser()
-            file.inputStream().use { stream ->
-                parser.setInput(stream, "UTF-8")
-                var depth = 0
-                var inTitleInfo = false
+            var depth = 0
+            var inTitleInfo = false
 
-                while (parser.eventType != XmlPullParser.END_DOCUMENT) {
-                    when (parser.eventType) {
-                        XmlPullParser.START_TAG -> {
-                            depth++
-                            if (parser.name == "title-info") inTitleInfo = true
-                            if (inTitleInfo && parser.name == "book-title") {
-                                title = parser.nextText().trim()
-                            }
-                            if (inTitleInfo && parser.name == "author") {
-                                author = parseAuthor(parser)
-                            }
+            while (parser.eventType != XmlPullParser.END_DOCUMENT) {
+                when (parser.eventType) {
+                    XmlPullParser.START_TAG -> {
+                        depth++
+                        if (parser.name == "title-info") inTitleInfo = true
+                        if (inTitleInfo && parser.name == "book-title") {
+                            title = parser.nextText().trim()
                         }
-                        XmlPullParser.END_TAG -> {
-                            depth--
-                            if (parser.name == "title-info") return title to author
+                        if (inTitleInfo && parser.name == "author") {
+                            author = parseAuthor(parser)
                         }
                     }
-                    parser.next()
+                    XmlPullParser.END_TAG -> {
+                        depth--
+                        if (parser.name == "title-info") return title to author
+                    }
                 }
+                parser.next()
             }
         } catch (_: Exception) { }
         return title to author
